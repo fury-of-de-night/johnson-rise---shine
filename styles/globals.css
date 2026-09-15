@@ -1,0 +1,25 @@
+/* /styles/globals.css — Johnson Rise & Shine (v3 compatible) */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@theme {
+  --color-forest: #2d5016;
+  --color-light-green: #8fbc8f;
+  --color-gold: #ffd700;
+  --font-serif: Georgia, Cambria, "Times New Roman", serif;
+  --font-sans: system-ui, sans-serif;
+}
+
+body {
+  background-color: #f9faf7;
+  color: #1a1a1a;
+  font-family: system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: #8fbc8f;
+  color: #1a1a1a;
+}
