@@ -8870,3 +8870,13 @@ const DISPOSABLE_DOMAINS = new Set([
   'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.loseyourip.com',
   'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.ooguy.com',
 ]);
+
+export function isDisposableEmail(email: string): boolean {
+  try {
+    const normalizedEmail = email.trim().toLowerCase();
+    const domain = normalizedEmail.slice(normalizedEmail.lastIndexOf('@') + 1);
+    return DISPOSABLE_DOMAINS.has(domain);
+  } catch {
+    return false;
+  }
+}

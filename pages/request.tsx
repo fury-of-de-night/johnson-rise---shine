@@ -87,7 +87,7 @@ export default function RequestPage() {
       setErrors((prev) => ({ ...prev, email: 'Disposable email not allowed.' }));
       return;
     }
-    const { error } = await supabase.from('pending_service_requests').insert({
+    const { error } = await supabase.from('service_requests').insert({
       customer_name: form.name.trim(),
       phone: form.phone.trim(),
       email: form.email.trim(),
