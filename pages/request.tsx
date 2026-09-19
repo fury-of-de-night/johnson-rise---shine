@@ -100,6 +100,9 @@ export default function RequestPage() {
       if (!grecaptcha || typeof grecaptcha.execute !== 'function') {
         throw new Error('reCAPTCHA not loaded');
       }
+      // v3 explicit-load: render invisible then execute
+      const btn = document.createElement('div'); btn.id='g-recaptcha-badge'; document.body.appendChild(btn);
+      if (typeof grecaptcha.render === 'function') { grecaptcha.render('g-recaptcha-badge', { sitekey: process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY, size: 'invisible', callback: () => {} }); }
       recaptchaToken = await new Promise<string>((resolve, reject) => {
         grecaptcha.ready(() => {
           grecaptcha
