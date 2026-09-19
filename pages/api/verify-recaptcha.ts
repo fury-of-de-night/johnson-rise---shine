@@ -1,4 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
+);
 
 export default async function handler(
   req: NextApiRequest,
@@ -13,9 +19,24 @@ export default async function handler(
     return res.status(400).json({ error: 'Token missing' });
   }
 
-  // Serverless-safe rate limit via Supabase (persistent, survives Lambda cold starts).
-  // Short-term: check a per-IP DB counter; long-term: full middleware-based limiter.
-  // (Rate-limit table migration: 006_rate_limits.sql — apply via Supabase CLI / MCP execute_sql.)
+  const xForwarded = req.headers['x-forwarded-for'];
+  const ip = (typeof xForwarded === 'string' ? xForwarded.split(',')[0] : req.socket?.remoteAddress) || 'unknown';
+
+  try {
+    const now = new Date();
+    const { data: rows } = await supabase.from('rate_limits').select('*').eq('ip', ip.trim()).gte('reset_at', now.toISOString()).limit(1);
+    if (rows && rows.length > 0) {
+      const row = rows[0];
+      if (row.count >= 5) {
+        return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+      }
+      await supabase.from('rate_limits').update({ count: row.count + 1 }).eq('id', row.id);
+    } else {
+      await supabase.from('rate_limits').insert({ ip: ip.trim(), count: 1, reset_at: new Date(Date.now() + 3600000).toISOString() });
+    }
+  } catch (e) {
+    console.error('Rate limit DB error:', e);
+  }
 
   const secret = process.env.RECAPTCHA_SECRET_KEY;
   if (!secret) {

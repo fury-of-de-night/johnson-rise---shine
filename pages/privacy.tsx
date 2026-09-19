@@ -14,6 +14,9 @@ export default function PrivacyPage() {
         <h2 className="font-serif text-xl text-forest mt-6 mb-3">Data We Collect</h2>
         <p className="text-gray-700 leading-relaxed mb-6">We collect only what is necessary to provide landscaping services: your name, Guyana phone number (+592 format), email, address (Region/Village), service preferences, preferred dates, property descriptions, and any special requirements. WhatsApp opt-in consent is stored separately.</p>
 
+        <h2 className="font-serif text-xl text-forest mt-6 mb-3">Temporary IP Logging</h2>
+        <p className="text-gray-700 leading-relaxed mb-6">To protect against spam, automated abuse, and malicious form submissions, we temporarily log your IP address during verification. This is used solely for rate limiting and security, is not sold or shared, and is automatically cleared after the rate-limit window expires.</p>
+
         <h2 className="font-serif text-xl text-forest mt-6 mb-3">Data Retention</h2>
         <p className="text-gray-700 leading-relaxed mb-6">Service request data is retained for up to 2 years from the date of submission. After that, it is securely deleted unless a longer retention period is required by local law or an active contract.</p>
 

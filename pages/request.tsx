@@ -77,6 +77,13 @@ export default function RequestPage() {
       delete e.consent;
     }
     setErrors(e);
+    if (Object.keys(e).length > 0) {
+      setTimeout(() => {
+        const firstKey = Object.keys(e)[0];
+        const el = document.getElementById(firstKey);
+        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.focus(); }
+      }, 50);
+    }
     return Object.keys(e).length === 0;
   };
 
@@ -178,7 +185,7 @@ export default function RequestPage() {
         <meta name="description" content="Request landscaping services in Guyana." />
       </Head>
       <Script
-        src={`https://www.google.com/recaptcha/api.js?render=${process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY}`}
+        src={`https://www.google.com/recaptcha/api.js?render=${process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY}&load=explicit`}
         strategy="afterInteractive"
       />
       <Header />
