@@ -1,5 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react';
 import Head from 'next/head';
+import Script from 'next/script';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import WhatsAppFloatButton from '@/components/WhatsAppFloatButton';
@@ -33,9 +34,11 @@ export default function RequestPage() {
     whatsappOptIn: false,
     consent: false,
   });
+  const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [refNumber, setRefNumber] = useState('');
+  const [errorState, setErrorState] = useState('');
 
   useEffect(() => {
     try {
@@ -79,35 +82,86 @@ export default function RequestPage() {
 
   const handleSubmit = async (e: FormEvent, viaWhatsApp = false) => {
     e.preventDefault();
-    if (!validate()) return;
+    setSubmitting(true);
+    if (!validate()) { setSubmitting(false); return; }
     const ref = 'JRS-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
 
-    // Server-side validation + insert via Edge Function call (simulated locally; production hits /functions/submit-service-request)
+    // reCAPTCHA v3: no widget, no user interaction — request a token on submit.
+    let recaptchaToken = '';
+    try {
+      const grecaptcha = (window as any).grecaptcha;
+      if (!grecaptcha || typeof grecaptcha.execute !== 'function') {
+        throw new Error('reCAPTCHA not loaded');
+      }
+      recaptchaToken = await new Promise<string>((resolve, reject) => {
+        grecaptcha.ready(() => {
+          grecaptcha
+            .execute(process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY, { action: 'submit' })
+            .then(resolve, reject);
+        });
+      });
+    } catch {
+      setSubmitting(false);
+      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA could not load. Please refresh and try again.' }));
+      return;
+    }
+
+    if (!recaptchaToken) {
+      setSubmitting(false);
+      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA verification failed. Please try again.' }));
+      return;
+    }
+
+    const verifyRes = await fetch('/api/verify-recaptcha', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: recaptchaToken }),
+    });
+    const verifyData = await verifyRes.json();
+    if (!verifyRes.ok || !verifyData.success) {
+      setSubmitting(false);
+      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA verification failed. Please try again.' }));
+      return;
+    }
     if (isDisposableEmail(form.email.trim())) {
+      setSubmitting(false);
       setErrors((prev) => ({ ...prev, email: 'Disposable email not allowed.' }));
       return;
     }
-    const { error } = await supabase.from('service_requests').insert({
+    const { error } = await supabase.from('pending_service_requests').insert({
       customer_name: form.name.trim(),
       phone: form.phone.trim(),
       email: form.email.trim(),
       address: form.region.trim() + ', ' + form.village.trim(),
       service_type: form.services.join(', '),
       description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}\nWhatsApp Opt-in: ${form.whatsappOptIn}`,
-      status: 'pending',
+      verification_token: ref, // Store ref as verification token
     });
     if (error) {
       console.error('Supabase insert error:', error);
+      setErrorState('its not you its us, send a message on whatsapp instead');
+      setRefNumber(ref); // Still set ref for WhatsApp message
+      setSubmitted(true); // Show submitted state with error message
+      try { localStorage.removeItem('jrs-request-form'); } catch { /* ignore */ }
+
+      if (viaWhatsApp) {
+        const msg = `Error submitting request (${ref}). %0Aits not you its us, send a message on whatsapp instead`;
+        window.open(`https://wa.me/5926992175?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
+      }
+      setSubmitting(false);
+      return;
     }
 
     setRefNumber(ref);
     setSubmitted(true);
+    setErrorState(''); // Clear any error state
     try { localStorage.removeItem('jrs-request-form'); } catch { /* ignore */ }
 
     if (viaWhatsApp) {
       const msg = `Service Request (${ref})%0AName: ${encodeURIComponent(sanitize(form.name.trim()))}%0APhone: ${encodeURIComponent(form.phone.trim())}%0AEmail: ${encodeURIComponent(form.email.trim())}%0AAddress: ${encodeURIComponent(form.region.trim() + ", " + form.village.trim())}%0AServices: ${encodeURIComponent(form.services.join(", "))}%0APreferred Date: ${encodeURIComponent(form.preferredDate)}%0ADescription: ${encodeURIComponent(sanitize(form.propertyDescription.trim()))}`;
       window.open(`https://wa.me/5926992175?text=${msg}`, '_blank', 'noopener,noreferrer');
     }
+    setSubmitting(false);
   };
 
   const toggleService = (s: string) => {
@@ -123,6 +177,10 @@ export default function RequestPage() {
         <title>Request Service - Johnson Rise & Shine</title>
         <meta name="description" content="Request landscaping services in Guyana." />
       </Head>
+      <Script
+        src={`https://www.google.com/recaptcha/api.js?render=${process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY}`}
+        strategy="afterInteractive"
+      />
       <Header />
       <main className="max-w-3xl mx-auto px-6 py-16">
         <h1 className="font-serif text-4xl text-forest mb-3">Service Request</h1>
@@ -211,6 +269,8 @@ export default function RequestPage() {
               <input type="checkbox" checked={form.consent} onChange={(e) => setForm({ ...form, consent: e.target.checked })} className="accent-forest" />
               <span>I consent to Johnson Rise & Shine storing my data to process this request.</span>
             </label>
+
+            {errors.recaptcha && <p className="text-red-600 text-xs">{errors.recaptcha}</p>}
             {errors.consent && <p className="text-red-600 text-xs">{errors.consent}</p>}
 
             <div className="flex flex-wrap gap-4 pt-2">

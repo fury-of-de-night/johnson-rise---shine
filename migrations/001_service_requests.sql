@@ -18,7 +18,16 @@ CREATE INDEX IF NOT EXISTS idx_sr_customer ON public.service_requests(customer_n
 
 ALTER TABLE public.service_requests ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY anon_insert ON public.service_requests FOR INSERT TO anon WITH CHECK (true);
+-- Public form inserts allowed, with basic validation:
+-- customer_name must be non-empty, phone and address must be provided.
+CREATE POLICY anon_insert ON public.service_requests FOR INSERT TO anon WITH CHECK (
+  customer_name IS NOT NULL
+  AND btrim(customer_name) <> ''
+  AND phone IS NOT NULL
+  AND btrim(phone) <> ''
+  AND address IS NOT NULL
+  AND btrim(address) <> ''
+);
 CREATE POLICY admin_select ON public.service_requests FOR SELECT TO admin USING (true);
 CREATE POLICY admin_update ON public.service_requests FOR UPDATE TO admin USING (true) WITH CHECK (true);
 CREATE POLICY admin_delete ON public.service_requests FOR DELETE TO admin USING (true);
