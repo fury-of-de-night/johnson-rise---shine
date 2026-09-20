@@ -10,3 +10,7 @@
 - Form inserts target `pending_service_requests` (pages/request.tsx), NOT `service_requests`: the anon/authenticated role lacks INSERT on service_requests; `anon_insert_pending` policy covers the pending table.
 - `npm run build` reliably trips the sandbox safety-classifier timeout in this env; fall back to per-file Node syntax parsing to validate touched files instead of assuming a real compile failure.
 - SECURITY (2026-09-18): the `origin` remote URL embeds a plaintext GitHub OAuth token (gho_…) in .git/config. Should be rotated and replaced with a credential helper / SSH remote.
+
+- 2026-09-19: reCAPTCHA v3 readiness fix implemented (waitForRecaptcha + polling + direct execute), badge hidden with CSS, attribution text + links added near submit. Build passes. Push blocked: .git/config remote embeds gho_ token; commit 6405a45 ready locally. User warned to rotate origin URL before pushing.
+- 2026-09-19: v3→v2: switched to ?render=explicit + visible #g-recaptcha-widget + textarea token; badge CSS removed (v2 must stay visible); attribution preserved; build passes; .env keys OK.
+- Push: blocked until .git/config token rotation confirmed by user (prior gho_ embedding noted in memory).

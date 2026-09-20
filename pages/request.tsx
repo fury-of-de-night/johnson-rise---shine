@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import Head from 'next/head';
 import Script from 'next/script';
 import Header from '@/components/Header';
@@ -6,18 +6,6 @@ import Footer from '@/components/Footer';
 import WhatsAppFloatButton from '@/components/WhatsAppFloatButton';
 import { supabase } from '@/lib/supabase';
 import { isDisposableEmail } from '@/lib/disposable-blocklist';
-
-function waitForRecaptcha(timeout = 8000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined') return reject(new Error('no window'));
-    if ((window as any).grecaptcha) return resolve();
-    const start = Date.now();
-    const iv = setInterval(() => {
-      if ((window as any).grecaptcha) { clearInterval(iv); resolve(); }
-      else if (Date.now() - start > timeout) { clearInterval(iv); reject(new Error('reCAPTCHA script timed out')); }
-    }, 150);
-  });
-}
 
 const servicesList = [
   "Lawn Installation & Maintenance",
@@ -49,20 +37,7 @@ export default function RequestPage() {
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
-  const recaptchaReadyRef = useRef(false);
   const [refNumber, setRefNumber] = useState('');
-
-  // Poll for window.grecaptcha so submit never races script onload
-  useEffect(() => {
-    const poll = () => {
-      if (typeof window !== 'undefined' && (window as any).grecaptcha) {
-        recaptchaReadyRef.current = true;
-      }
-    };
-    poll();
-    const iv = setInterval(poll, 300);
-    return () => clearInterval(iv);
-  }, []);
   const [errorState, setErrorState] = useState('');
 
   useEffect(() => {
@@ -118,31 +93,12 @@ export default function RequestPage() {
     if (!validate()) { setSubmitting(false); return; }
     const ref = 'JRS-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
 
-    // reCAPTCHA v3: no widget, no user interaction — request a token on submit.
-    let recaptchaToken = '';
-    try {
-      // Wait for the script to initialize window.grecaptcha (no race with onload)
-      if (!recaptchaReadyRef.current) {
-        await waitForRecaptcha(8000);
-      }
-      const grecaptcha = (window as any).grecaptcha;
-      if (!grecaptcha || typeof grecaptcha.execute !== 'function') {
-        throw new Error('reCAPTCHA not loaded');
-      }
-      // v3 explicit-load: execute directly — no render step needed
-      recaptchaToken = await grecaptcha.execute(
-        process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || '',
-        { action: 'submit' }
-      );
-    } catch {
-      setSubmitting(false);
-      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA could not load. Please refresh and try again.' }));
-      return;
-    }
-
+    // reCAPTCHA v2 (visible checkbox): token retrieved from hidden field after render
+    const hiddenResponse = document.querySelector('textarea[name="g-recaptcha-response"]') as HTMLTextAreaElement | null;
+    const recaptchaToken = hiddenResponse ? hiddenResponse.value : '';
     if (!recaptchaToken) {
       setSubmitting(false);
-      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA verification failed. Please try again.' }));
+      setErrors((prev) => ({ ...prev, recaptcha: 'Please complete the reCAPTCHA verification.' }));
       return;
     }
 
@@ -212,14 +168,18 @@ export default function RequestPage() {
         <meta name="description" content="Request landscaping services in Guyana." />
       </Head>
       <Script
-        src={`https://www.google.com/recaptcha/api.js?render=${process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || ''}&load=explicit`}
+        src={`https://www.google.com/recaptcha/api.js?render=explicit`}
         strategy="afterInteractive"
+        onLoad={() => {
+          const w = window as any;
+          if (w.grecaptcha && typeof w.grecaptcha.render === 'function') {
+            w.grecaptcha.render('g-recaptcha-widget', {
+              sitekey: process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || '',
+              callback: (token: string) => {}
+            });
+          }
+        }}
       />
-      <style jsx global>{`
-        /* Hide reCAPTCHA v3 badge; attribution text provided below per Google's terms */
-        .grecaptcha-badge { display: none !important; }
-        iframe[src*="google.com/recaptcha"] { display: none !important; }
-      `}</style>
       <Header />
       <main className="max-w-3xl mx-auto px-6 py-16">
         <h1 className="font-serif text-4xl text-forest mb-3">Service Request</h1>
@@ -308,6 +268,8 @@ export default function RequestPage() {
               <input type="checkbox" checked={form.consent} onChange={(e) => setForm({ ...form, consent: e.target.checked })} className="accent-forest" />
               <span>I consent to Johnson Rise & Shine storing my data to process this request.</span>
             </label>
+            {/* Visible v2 reCAPTCHA widget */}
+            <div id="g-recaptcha-widget" className="mb-4"></div>
 
             {errors.recaptcha && <p className="text-red-600 text-xs">{errors.recaptcha}</p>}
             {errors.consent && <p className="text-red-600 text-xs">{errors.consent}</p>}
