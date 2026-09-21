@@ -1,4 +1,15 @@
 import { useState, useEffect, FormEvent } from 'react';
+
+// reCAPTCHA types
+declare global {
+  interface Window {
+    grecaptcha: {
+      ready: (callback: () => void) => void;
+      execute: (siteKey: string, options: { action: string }) => Promise<string>;
+      render: (element: string | HTMLElement, options: any) => number;
+    };
+  }
+}
 import Head from 'next/head';
 import Script from 'next/script';
 import Header from '@/components/Header';
@@ -93,9 +104,22 @@ export default function RequestPage() {
     if (!validate()) { setSubmitting(false); return; }
     const ref = 'JRS-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
 
-    // reCAPTCHA v2 (visible checkbox): token retrieved from hidden field after render
-    const hiddenResponse = document.querySelector('textarea[name="g-recaptcha-response"]') as HTMLTextAreaElement | null;
-    const recaptchaToken = hiddenResponse ? hiddenResponse.value : '';
+    const recaptchaToken = await new Promise<string>((resolve, reject) => {
+      if (!window.grecaptcha) {
+        reject(new Error('reCAPTCHA not loaded'));
+        return;
+      }
+
+      window.grecaptcha.ready(() => {
+        window.grecaptcha
+          .execute(process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!, {
+            action: 'submit',
+          })
+          .then(resolve)
+          .catch(reject);
+      });
+    }).catch(() => null);
+
     if (!recaptchaToken) {
       setSubmitting(false);
       setErrors((prev) => ({ ...prev, recaptcha: 'Please complete the reCAPTCHA verification.' }));
@@ -168,17 +192,8 @@ export default function RequestPage() {
         <meta name="description" content="Request landscaping services in Guyana." />
       </Head>
       <Script
-        src={`https://www.google.com/recaptcha/api.js?render=explicit`}
+        src={`https://www.google.com/recaptcha/api.js?render=${process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY}`}
         strategy="afterInteractive"
-        onLoad={() => {
-          const w = window as any;
-          if (w.grecaptcha && typeof w.grecaptcha.render === 'function') {
-            w.grecaptcha.render('g-recaptcha-widget', {
-              sitekey: process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || '',
-              callback: (token: string) => {}
-            });
-          }
-        }}
       />
       <Header />
       <main className="max-w-3xl mx-auto px-6 py-16">
@@ -268,10 +283,7 @@ export default function RequestPage() {
               <input type="checkbox" checked={form.consent} onChange={(e) => setForm({ ...form, consent: e.target.checked })} className="accent-forest" />
               <span>I consent to Johnson Rise & Shine storing my data to process this request.</span>
             </label>
-            {/* Visible v2 reCAPTCHA widget */}
-            <div id="g-recaptcha-widget" className="mb-4"></div>
-
-            {errors.recaptcha && <p className="text-red-600 text-xs">{errors.recaptcha}</p>}
+            
             {errors.consent && <p className="text-red-600 text-xs">{errors.consent}</p>}
             <p className="text-xs text-gray-500 pt-1">This site is protected by reCAPTCHA. Google's{' '}
               <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="underline hover:text-forest">Privacy Policy</a> and{' '}
