@@ -111,21 +111,38 @@ export default function RequestPage() {
       return;
     }
 
+    const siteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+
+    if (!siteKey) {
+      console.error('reCAPTCHA site key is missing from the client build.');
+      setSubmitting(false);
+      setErrors((prev) => ({
+        ...prev,
+        recaptcha: 'reCAPTCHA is not configured correctly. Please try again later.',
+      }));
+      return;
+    }
+
     const recaptchaToken = await new Promise<string>((resolve, reject) => {
-      if (!window.grecaptcha) {
-        reject(new Error('reCAPTCHA not loaded'));
+      if (
+        !window.grecaptcha ||
+        typeof window.grecaptcha.ready !== 'function' ||
+        typeof window.grecaptcha.execute !== 'function'
+      ) {
+        reject(new Error('reCAPTCHA API is not available'));
         return;
       }
 
       window.grecaptcha.ready(() => {
         window.grecaptcha
-          .execute(process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!, {
-            action: 'submit',
-          })
+          .execute(siteKey, { action: 'submit' })
           .then(resolve)
           .catch(reject);
       });
-    }).catch(() => null);
+    }).catch((error) => {
+      console.error('reCAPTCHA execute error:', error);
+      return null;
+    });
 
     if (!recaptchaToken) {
       setSubmitting(false);
