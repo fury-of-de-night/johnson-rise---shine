@@ -50,6 +50,7 @@ export default function RequestPage() {
   const [submitted, setSubmitted] = useState(false);
   const [refNumber, setRefNumber] = useState('');
   const [errorState, setErrorState] = useState('');
+  const [recaptchaReady, setRecaptchaReady] = useState(false);
 
   useEffect(() => {
     try {
@@ -103,6 +104,12 @@ export default function RequestPage() {
     setSubmitting(true);
     if (!validate()) { setSubmitting(false); return; }
     const ref = 'JRS-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+
+    if (!recaptchaReady) {
+      setSubmitting(false);
+      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA is still loading, please try again.' }));
+      return;
+    }
 
     const recaptchaToken = await new Promise<string>((resolve, reject) => {
       if (!window.grecaptcha) {
@@ -194,6 +201,7 @@ export default function RequestPage() {
       <Script
         src={`https://www.google.com/recaptcha/api.js?render=${process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY}`}
         strategy="afterInteractive"
+        onLoad={() => setRecaptchaReady(true)}
       />
       <Header />
       <main className="max-w-3xl mx-auto px-6 py-16">
