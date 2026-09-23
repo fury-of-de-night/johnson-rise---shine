@@ -173,7 +173,6 @@ export default function RequestPage() {
       address: form.region.trim() + ', ' + form.village.trim(),
       service_type: form.services.join(', '),
       description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}\nWhatsApp Opt-in: ${form.whatsappOptIn}`,
-      verification_token: ref, // Store ref as verification token
     });
     if (error) {
       console.error('Supabase insert error:', error);
@@ -315,8 +314,8 @@ export default function RequestPage() {
               <a href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer" className="underline hover:text-forest">Terms of Service</a> apply.</p>
 
             <div className="flex flex-wrap gap-4 pt-2">
-              <button type="submit" className="bg-forest text-white px-8 py-3 rounded-full font-medium hover:bg-green-900 transition shadow-lg">Submit Request</button>
-              <button type="button" onClick={(e) => handleSubmit(e as any, true)} className="bg-gold text-forest px-8 py-3 rounded-full font-medium hover:bg-yellow-300 transition shadow-lg">Submit & Continue on WhatsApp</button>
+              <button type="submit" disabled={submitting} className={`bg-forest text-white px-8 py-3 rounded-full font-medium shadow-lg transition ${submitting ? 'opacity-60 cursor-not-allowed' : 'hover:bg-green-900'}`}>{submitting ? 'Submitting...' : submitted ? 'Submitted ✓' : 'Submit Request'}</button>
+              <button type="button" disabled={submitting} onClick={(e) => handleSubmit(e as any, true)} className={`bg-gold text-forest px-8 py-3 rounded-full font-medium shadow-lg transition ${submitting ? 'opacity-60 cursor-not-allowed' : 'hover:bg-yellow-300'}`}>{submitting ? 'Submitting...' : submitted ? 'Submitted ✓' : 'Submit & Continue on WhatsApp'}</button>
             </div>
           </form>
         )}
