@@ -5,7 +5,7 @@ export default function MyApp({ Component, pageProps }: any) {
   return (
     <>
       <Head>
-        <link rel="icon" href="/favicon.ico" />
+        <link rel="icon" href="/favicon.png" type="image/png" />
       </Head>
       <Component {...pageProps} />
       <CookieBanner />

@@ -3,9 +3,18 @@ import Head from 'next/head';
 import { supabase } from '@/lib/supabase';
 
 export default function AdminPage() {
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState('admin@johnsonriseshine.gy');
   const [password, setPassword] = useState('');
   const [auth, setAuth] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSending, setResetSending] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
+  const [changeMode, setChangeMode] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [changeSending, setChangeSending] = useState(false);
+  const [changeMsg, setChangeMsg] = useState('');
   const [requests, setRequests] = useState<any[]>([]);
   const [businessEmail, setBusinessEmail] = useState('admin@johnsonriseshine.gy');
   const [filter, setFilter] = useState('all');
@@ -32,6 +41,33 @@ export default function AdminPage() {
       }
     });
   }, [auth]);
+
+  const handleForgot = async () => {
+    if (!email.trim()) { setMessage('Enter email to send reset link.'); return; }
+    setResetSending(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: typeof window !== 'undefined'
+          ? `${window.location.origin}/admin/reset`
+          : 'https://johnson-rise-shine.vercel.app/admin/reset',
+      });
+      if (error) { setMessage(error.message || 'Failed to send reset link.'); }
+      else { setMessage('If account exists, reset link sent. Check your email.'); }
+    } catch { setMessage('Failed to send reset link.'); }
+    setResetSending(false);
+  };
+
+  const handleChangePassword = async () => {
+    if (!newPassword || newPassword.length < 6) { setChangeMsg('Password must be at least 6 characters.'); return; }
+    if (newPassword !== confirmPassword) { setChangeMsg('Passwords do not match.'); return; }
+    setChangeSending(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) { setChangeMsg(error.message || 'Failed to update password.'); }
+      else { setChangeMsg('Password updated.'); setNewPassword(''); setConfirmPassword(''); setTimeout(() => setChangeMsg(''), 3000); }
+    } catch { setChangeMsg('Failed to update password.'); }
+    setChangeSending(false);
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,10 +126,31 @@ export default function AdminPage() {
           <div className="max-w-md mx-auto px-6 py-24">
             <h1 className="font-serif text-3xl text-forest mb-6">Admin Login</h1>
             <form onSubmit={handleLogin} className="space-y-4 bg-white p-6 rounded-2xl shadow-md border border-green-100">
-              <input type="email" placeholder="admin@johnsonriseshine.gy" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
-              <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
-              <button type="button" onClick={() => { supabase.auth.resetPasswordForEmail(email); setMessage('If account exists, reset link sent.'); }} className="text-xs text-forest hover:underline">Forgot password?</button>
-              <button type="button" onClick={() => { window.open('https://szqtawhbmldbievrtadh.supabase.co/auth/v1/authorize?provider=email', '_blank'); }} className="text-xs text-forest hover:underline">Change password</button>
+              {resetMode ? (
+                <>
+                  <input type="email" placeholder="admin@johnsonriseshine.gy" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
+                  <button type="button" disabled={resetSending} onClick={handleForgot} className={`w-full py-2.5 rounded-full text-white transition ${resetSending ? 'bg-forest/60 cursor-not-allowed' : 'bg-forest hover:bg-green-900'}`}>{resetSending ? 'Sending...' : 'Send Reset Link'}</button>
+                  <button type="button" onClick={() => { setResetMode(false); setResetMsg(''); }} className="w-full text-xs text-forest hover:underline">Back to login</button>
+                  {resetMsg && <p className={`text-sm ${resetMsg.includes('sent') ? 'text-green-700' : 'text-red-600'}`}>{resetMsg}</p>}
+                </>
+              ) : (
+                <>
+                  <input type="email" placeholder="admin@johnsonriseshine.gy" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
+                  <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
+                  <button type="button" onClick={() => setResetMode(true)} className="text-xs text-forest hover:underline">Forgot password?</button>
+                </>
+              )}
+              {changeMode ? (
+                <>
+                  <input type="password" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
+                  <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
+                  <button type="button" disabled={changeSending} onClick={handleChangePassword} className={`w-full py-2.5 rounded-full text-white transition ${changeSending ? 'bg-forest/60 cursor-not-allowed' : 'bg-forest hover:bg-green-900'}`}>{changeSending ? 'Updating...' : 'Update Password'}</button>
+                  <button type="button" onClick={() => { setChangeMode(false); setChangeMsg(''); setNewPassword(''); setConfirmPassword(''); }} className="w-full text-xs text-forest hover:underline">Back to login</button>
+                  {changeMsg && <p className={`text-sm ${changeMsg.includes('updated') ? 'text-green-700' : 'text-red-600'}`}>{changeMsg}</p>}
+                </>
+              ) : (
+                <button type="button" onClick={() => setChangeMode(true)} className="text-xs text-forest hover:underline">Change password</button>
+              )}
               <button type="submit" className="w-full bg-forest text-white py-2.5 rounded-full hover:bg-green-900">Login</button>
               {message && <p className="text-red-600 text-sm">{message}</p>}
             </form>
@@ -105,6 +162,13 @@ export default function AdminPage() {
               <div>
                 <h1 className="font-serif text-3xl text-forest">Dashboard</h1>
                 <a href="/" onClick={() => { setAuth(false); document.cookie = 'jrs-session=; path=/; max-age=0'; }} className="text-xs text-forest hover:underline">Home / Logout</a>
+                <div className="mt-4 pt-3 border-t border-green-100">
+                  <h3 className="font-medium text-forest mb-2">Change Password</h3>
+                  <input type="password" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full rounded-lg border px-3 py-2 mb-2 text-sm" />
+                  <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full rounded-lg border px-3 py-2 mb-2 text-sm" />
+                  <button type="button" disabled={changeSending} onClick={handleChangePassword} className={`w-full py-2 rounded-full text-white text-sm transition ${changeSending ? 'bg-forest/60 cursor-not-allowed' : 'bg-forest hover:bg-green-900'}`}>{changeSending ? 'Updating...' : 'Update Password'}</button>
+                  {changeMsg && <p className={`text-xs mt-1 ${changeMsg.includes('updated') ? 'text-green-700' : 'text-red-600'}`}>{changeMsg}</p>}
+                </div>
               </div>
               <button onClick={exportCSV} className="bg-gold text-forest px-4 py-2 rounded-full text-sm font-medium hover:bg-yellow-300">Export CSV</button>
             </div>
