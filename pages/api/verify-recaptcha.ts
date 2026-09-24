@@ -14,9 +14,12 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { token } = req.body;
+  const { token, formData } = req.body;
   if (!token) {
     return res.status(400).json({ error: 'Token missing' });
+  }
+  if (!formData || typeof formData !== 'object') {
+    return res.status(400).json({ error: 'Form data missing' });
   }
 
   const xForwarded = req.headers['x-forwarded-for'];
@@ -72,7 +75,34 @@ export default async function handler(
       return res.status(400).json({ error: 'reCAPTCHA verification failed' });
     }
 
-    return res.status(200).json({ success: true, score: data.score });
+    // reCAPTCHA token verified — discard it.
+    // Generate a server-side application verification_token for the pending request.
+    // This is NOT the reCAPTCHA token. It is a separate, single-use application token
+    // used by verify-service-request to promote the row to service_requests.
+    const verificationToken = crypto.randomUUID();
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('pending_service_requests')
+      .insert({
+        customer_name: String(formData.customer_name || '').trim(),
+        phone: String(formData.phone || '').trim(),
+        email: String(formData.email || '').trim(),
+        address: String(formData.address || '').trim(),
+        service_type: String(formData.service_type || '').trim(),
+        description: String(formData.description || '').trim(),
+        whatsapp_confirmed: false,
+        verification_token: verificationToken,
+      })
+      .select('id')
+      .single();
+
+    if (insertError || !inserted) {
+      console.error('Failed to create pending request:', insertError);
+      return res.status(500).json({ error: 'Failed to create request.' });
+    }
+
+    // reCAPTCHA token is NOT stored. verification_token is the application token.
+    return res.status(200).json({ success: true, score: data.score, pendingId: inserted.id });
   } catch (error) {
     console.error('Error verifying reCAPTCHA:', error);
     return res.status(500).json({ error: 'Failed to verify reCAPTCHA' });

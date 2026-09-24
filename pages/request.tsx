@@ -153,7 +153,17 @@ export default function RequestPage() {
     const verifyRes = await fetch('/api/verify-recaptcha', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: recaptchaToken }),
+      body: JSON.stringify({
+        token: recaptchaToken,
+        formData: {
+          customer_name: form.name.trim(),
+          phone: form.phone.trim(),
+          email: form.email.trim(),
+          address: form.region.trim() + ', ' + form.village.trim(),
+          service_type: form.services.join(', '),
+          description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}\nWhatsApp Opt-in: ${form.whatsappOptIn}`,
+        },
+      }),
     });
     const verifyData = await verifyRes.json();
     if (!verifyRes.ok || !verifyData.success) {
@@ -166,39 +176,26 @@ export default function RequestPage() {
       setErrors((prev) => ({ ...prev, email: 'Disposable email not allowed.' }));
       return;
     }
-    const { error } = await supabase.from('pending_service_requests').insert({
-      customer_name: form.name.trim(),
-      phone: form.phone.trim(),
-      email: form.email.trim(),
-      address: form.region.trim() + ', ' + form.village.trim(),
-      service_type: form.services.join(', '),
-      description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}\nWhatsApp Opt-in: ${form.whatsappOptIn}`,
-    });
-    if (error) {
-      console.error('Supabase insert error:', error);
-      setErrorState('its not you its us, send a message on whatsapp instead');
-      setRefNumber(ref); // Still set ref for WhatsApp message
-      setSubmitted(true); // Show submitted state with error message
-      try { localStorage.removeItem('jrs-request-form'); } catch { /* ignore */ }
 
+    // The server-side /api/verify-recaptcha handles insertion into
+    // pending_service_requests with a server-generated verification_token.
+    // We just confirm the response has a pendingId to show success.
+    if (verifyData.pendingId) {
+      setRefNumber('JRS-' + String(verifyData.pendingId).slice(0, 8).toUpperCase());
+      setSubmitted(true);
+      setErrorState('');
+      try { localStorage.removeItem('jrs-request-form'); } catch { /* ignore */ }
       if (viaWhatsApp) {
-        const msg = `Error submitting request (${ref}). %0Aits not you its us, send a message on whatsapp instead`;
+        const msg = `Service Request (${ref})%0AName: ${encodeURIComponent(sanitize(form.name.trim()))}`;
         window.open(`https://wa.me/5926992175?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
       }
       setSubmitting(false);
       return;
     }
 
-    setRefNumber(ref);
-    setSubmitted(true);
-    setErrorState(''); // Clear any error state
-    try { localStorage.removeItem('jrs-request-form'); } catch { /* ignore */ }
-
-    if (viaWhatsApp) {
-      const msg = `Service Request (${ref})%0AName: ${encodeURIComponent(sanitize(form.name.trim()))}%0APhone: ${encodeURIComponent(form.phone.trim())}%0AEmail: ${encodeURIComponent(form.email.trim())}%0AAddress: ${encodeURIComponent(form.region.trim() + ", " + form.village.trim())}%0AServices: ${encodeURIComponent(form.services.join(", "))}%0APreferred Date: ${encodeURIComponent(form.preferredDate)}%0ADescription: ${encodeURIComponent(sanitize(form.propertyDescription.trim()))}`;
-      window.open(`https://wa.me/5926992175?text=${msg}`, '_blank', 'noopener,noreferrer');
-    }
+    // If no pendingId returned (should not happen if success==true), fall back.
     setSubmitting(false);
+    setErrors((prev) => ({ ...prev, recaptcha: 'Failed to create request record.' }));
   };
 
   const toggleService = (s: string) => {

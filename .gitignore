@@ -6,3 +6,5 @@ out
 dist
 build
 .git
+.vercel
+.env*

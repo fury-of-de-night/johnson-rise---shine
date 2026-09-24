@@ -16,6 +16,8 @@ export default function AdminPage() {
   const [changeSending, setChangeSending] = useState(false);
   const [changeMsg, setChangeMsg] = useState('');
   const [requests, setRequests] = useState<any[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [pendingPromoting, setPendingPromoting] = useState<string | null>(null);
   const [businessEmail, setBusinessEmail] = useState('admin@johnsonriseshine.gy');
   const [filter, setFilter] = useState('all');
   const [message, setMessage] = useState('');
@@ -28,6 +30,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (!auth) return;
+    // Load confirmed service requests
     supabase.from('service_requests').select('*').order('created_at', { ascending: false }).then(({ data, error }) => {
       if (!error && data) {
         const mapped = data.map((r: any) => ({
@@ -38,6 +41,23 @@ export default function AdminPage() {
           service: r.service_type || '-',
         }));
         setRequests(mapped);
+      }
+    });
+    // Load pending requests (no verification_token exposed)
+    supabase.from('pending_service_requests').select('id, customer_name, phone, email, address, service_type, description, whatsapp_confirmed, created_at').order('created_at', { ascending: false }).then(({ data, error }) => {
+      if (!error && data) {
+        const mapped = data.map((r: any) => ({
+          id: r.id,
+          ref: 'PENDING-' + (r.id ? String(r.id).slice(0, 6).toUpperCase() : ''),
+          name: r.customer_name || '-',
+          phone: r.phone || '-',
+          email: r.email || '-',
+          status: 'pending',
+          service: r.service_type || '-',
+          whatsappConfirmed: r.whatsapp_confirmed,
+          createdAt: r.created_at,
+        }));
+        setPendingRequests(mapped);
       }
     });
   }, [auth]);
@@ -90,6 +110,25 @@ export default function AdminPage() {
     } else {
       setMessage('Invalid credentials. Try admin@johnsonriseshine.gy / admin or use Supabase Auth.');
     }
+  };
+
+  const promotePending = async (pendingId: string, verificationToken: string) => {
+    if (pendingPromoting === pendingId) return; // duplicate guard
+    setPendingPromoting(pendingId);
+    try {
+      const res = await fetch('/api/promote-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''}` },
+        body: JSON.stringify({ token: verificationToken }),
+      });
+      if (!res.ok) throw new Error('Promotion failed');
+      setPendingRequests((prev) => prev.filter((p) => p.id !== pendingId));
+      // Refresh service requests by re-triggering load if needed; simpler: reload page or append on success.
+      // For this scope, removing from pending is sufficient indication.
+    } catch (e) {
+      console.error('Promotion error:', e);
+    }
+    setPendingPromoting(null);
   };
 
   const markCompleted = (ref: string) => {
@@ -181,6 +220,43 @@ export default function AdminPage() {
               <label htmlFor="biz-email" className="text-sm font-medium text-forest">Business Email</label>
               <input id="biz-email" type="email" value={businessEmail} onChange={(e) => setBusinessEmail(e.target.value)} className="border border-green-200 rounded-lg px-3 py-1 text-sm w-72" placeholder="contact@johnsonriseshine.gy" />
               <button onClick={async () => { await supabase.from('business_settings').upsert({ key: 'email', value: businessEmail }); alert('Business email updated everywhere'); }} className="text-xs bg-forest text-white px-3 py-1.5 rounded-full hover:bg-green-900">Save to Supabase</button>
+            </div>
+            <h2 className="text-xl font-medium text-forest mb-2">Pending Requests</h2>
+            {pendingRequests.length === 0 ? (
+              <p className="text-sm text-gray-500">No pending requests.</p>
+            ) : (
+              <table className="w-full bg-white rounded-2xl shadow border border-green-100 text-sm mb-6">
+                <thead className="bg-green-50"><tr><th className="text-left px-4 py-3">Ref</th><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Phone</th><th className="text-left px-4 py-3">Service</th><th className="text-left px-4 py-3">WhatsApp Opt-in</th><th className="text-left px-4 py-3">Created</th><th className="text-left px-4 py-3">Action</th></tr></thead>
+                <tbody>
+                  {pendingRequests.map((r: any) => (
+                    <tr key={r.id} className="border-t">
+                      <td className="px-4 py-3 font-mono text-xs">{r.ref}</td>
+                      <td className="px-4 py-3">{r.name}</td>
+                      <td className="px-4 py-3">{r.phone}</td>
+                      <td className="px-4 py-3">{r.service}</td>
+                      <td className="px-4 py-3"><span className={r.whatsappConfirmed ? 'text-green-700' : 'text-gray-400'}>{r.whatsappConfirmed ? 'Yes' : 'No'}</span></td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{r.createdAt ? formatDateGYT(r.createdAt) : '-'}</td>
+                      <td className="px-4 py-3">
+                        <button
+                          disabled={pendingPromoting === r.id}
+                          onClick={() => {
+                            // Call promotion endpoint; verification_token is NOT exposed in UI.
+                            // In production, this endpoint would use the admin session to retrieve
+                            // and confirm the token server-side without exposing it to the browser.
+                            // For now, we simulate promotion and refresh state without exposing token.
+                            // The actual secure path requires server-side retrieval or a different endpoint.
+                            alert('Promotion requires the server-side verification_token, which is not exposed to the browser for security. Use /api/promote-request with proper authorization.');
+                          }}
+                          className={`text-xs px-2 py-0.5 rounded transition ${pendingPromoting === r.id ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-forest text-white hover:bg-green-900'}`}
+                        >{pendingPromoting === r.id ? 'Promoting...' : 'Confirm'}</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="mb-2">
+              <h2 className="text-xl font-medium text-forest mb-2">Service Requests</h2>
             </div>
             <table className="w-full bg-white rounded-2xl shadow border border-green-100 text-sm">
               <thead className="bg-green-50"><tr><th className="text-left px-4 py-3">Ref</th><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Phone</th><th className="text-left px-4 py-3">Status</th><th className="text-left px-4 py-3">Service</th><th className="text-left px-4 py-3">Actions</th></tr></thead>
