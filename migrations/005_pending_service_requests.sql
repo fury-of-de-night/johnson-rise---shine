@@ -1,18 +1,11 @@
-CREATE TABLE IF NOT EXISTS public.pending_service_requests (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    customer_name text NOT NULL,
-    phone text,
-    email text,
-    address text NOT NULL,
-    service_type text NOT NULL,
-    description text,
-    status text DEFAULT 'pending',
-    whatsapp_confirmed boolean DEFAULT false,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now(),
-    verification_token text
-);
-ALTER TABLE public.pending_service_requests ENABLE ROW LEVEL SECURITY;
-CREATE POLICY IF NOT EXISTS anon_insert_pending ON public.pending_service_requests FOR INSERT TO anon WITH CHECK (true);
-CREATE POLICY IF NOT EXISTS anon_select_pending ON public.pending_service_requests FOR SELECT TO anon USING (true);
-CREATE INDEX IF NOT EXISTS idx_pending_created ON public.pending_service_requests(created_at DESC);
+-- Migration 005: Add missing verification token hash and timestamp columns
+-- Live DB schema has: verification_token_hash, verification_expires_at, verified_at
+-- Repository schema currently has: verification_token (single column)
+
+-- Add missing columns to align repository schema with live DB
+ALTER TABLE public.pending_service_requests ADD COLUMN verification_token_hash text;
+ALTER TABLE public.pending_service_requests ADD COLUMN verification_expires_at timestamptz;
+ALTER TABLE public.pending_service_requests ADD COLUMN verified_at timestamptz;
+
+-- Create index on verification_token_hash for efficient lookups
+CREATE INDEX IF NOT EXISTS idx_pending_service_requests_token_hash ON public.pending_service_requests(verification_token_hash);

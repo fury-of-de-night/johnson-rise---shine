@@ -1,142 +1,226 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Head from 'next/head';
 import { supabase } from '@/lib/supabase';
 
 export default function AdminPage() {
-  const [email, setEmail] = useState('admin@johnsonriseshine.gy');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [auth, setAuth] = useState(false);
-  const [resetMode, setResetMode] = useState(false);
-  const [resetEmail, setResetEmail] = useState('');
-  const [resetSending, setResetSending] = useState(false);
-  const [resetMsg, setResetMsg] = useState('');
-  const [changeMode, setChangeMode] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginError, setLoginError] = useState('');
+
+  // Password change
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [changeSending, setChangeSending] = useState(false);
   const [changeMsg, setChangeMsg] = useState('');
+
+  // Password reset (forgot)
+  const [resetMode, setResetMode] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSending, setResetSending] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
+
+  // Data
   const [requests, setRequests] = useState<any[]>([]);
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
   const [pendingPromoting, setPendingPromoting] = useState<string | null>(null);
+  const [promotionError, setPromotionError] = useState<string | null>(null);
+  const [promotionSuccess, setPromotionSuccess] = useState<string | null>(null);
   const [businessEmail, setBusinessEmail] = useState('admin@johnsonriseshine.gy');
   const [filter, setFilter] = useState('all');
-  const [message, setMessage] = useState('');
 
+  // Check existing Supabase Auth session on mount
   useEffect(() => {
-    try {
-      if (document.cookie.includes('jrs-session=')) { setAuth(true); }
-    } catch { /* ignore */ }
+    const checkSession = async () => {
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (!error && user) {
+          setAuth(true);
+        }
+      } catch {
+        // No session
+      }
+      setAuthLoading(false);
+    };
+    checkSession();
+
+    // Listen for auth state changes (login, logout, token refresh)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuth(!!session?.user);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
+  // Load data when authenticated
+  const loadData = useCallback(async () => {
     if (!auth) return;
+
     // Load confirmed service requests
-    supabase.from('service_requests').select('*').order('created_at', { ascending: false }).then(({ data, error }) => {
-      if (!error && data) {
-        const mapped = data.map((r: any) => ({
-          ref: r.id ? String(r.id).slice(0, 8).toUpperCase() : 'JRS-?',
-          name: r.customer_name || '-',
-          phone: r.phone || '-',
-          status: r.status || 'pending',
-          service: r.service_type || '-',
-        }));
-        setRequests(mapped);
-      }
-    });
-    // Load pending requests (no verification_token exposed)
-    supabase.from('pending_service_requests').select('id, customer_name, phone, email, address, service_type, description, whatsapp_confirmed, created_at').order('created_at', { ascending: false }).then(({ data, error }) => {
-      if (!error && data) {
-        const mapped = data.map((r: any) => ({
-          id: r.id,
-          ref: 'PENDING-' + (r.id ? String(r.id).slice(0, 6).toUpperCase() : ''),
-          name: r.customer_name || '-',
-          phone: r.phone || '-',
-          email: r.email || '-',
-          status: 'pending',
-          service: r.service_type || '-',
-          whatsappConfirmed: r.whatsapp_confirmed,
-          createdAt: r.created_at,
-        }));
-        setPendingRequests(mapped);
-      }
-    });
+    const { data: srData, error: srErr } = await supabase
+      .from('service_requests')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (!srErr && srData) {
+      setRequests(srData.map((r: any) => ({
+        id: r.id,
+        ref: r.id ? String(r.id).slice(0, 8).toUpperCase() : 'JRS-?',
+        name: r.customer_name || '-',
+        phone: r.phone || '-',
+        status: r.status || 'pending',
+        service: r.service_type || '-',
+      })));
+    }
+
+    // Load pending requests (no token hash exposed — select only safe columns)
+    const { data: prData, error: prErr } = await supabase
+      .from('pending_service_requests')
+      .select('id, customer_name, phone, email, address, service_type, description, whatsapp_confirmed, created_at')
+      .order('created_at', { ascending: false });
+
+    if (!prErr && prData) {
+      setPendingRequests(prData.map((r: any) => ({
+        id: r.id,
+        ref: 'PENDING-' + (r.id ? String(r.id).slice(0, 6).toUpperCase() : ''),
+        name: r.customer_name || '-',
+        phone: r.phone || '-',
+        email: r.email || '-',
+        status: 'pending',
+        service: r.service_type || '-',
+        whatsappConfirmed: r.whatsapp_confirmed,
+        createdAt: r.created_at,
+      })));
+    }
   }, [auth]);
 
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // Real Supabase Auth login
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+
+    if (!email.trim() || !password) {
+      setLoginError('Email and password are required.');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+
+      if (error) {
+        setLoginError(error.message || 'Login failed.');
+        return;
+      }
+
+      // Auth state change listener will set auth=true
+    } catch {
+      setLoginError('Login failed. Please try again.');
+    }
+  };
+
+  // Logout
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setAuth(false);
+    setRequests([]);
+    setPendingRequests([]);
+  };
+
+  // Forgot password
   const handleForgot = async () => {
-    if (!email.trim()) { setMessage('Enter email to send reset link.'); return; }
+    if (!resetEmail.trim()) { setResetMsg('Enter your email address.'); return; }
     setResetSending(true);
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail.trim(), {
         redirectTo: typeof window !== 'undefined'
           ? `${window.location.origin}/admin/reset`
           : 'https://johnson-rise-shine.vercel.app/admin/reset',
       });
-      if (error) { setMessage(error.message || 'Failed to send reset link.'); }
-      else { setMessage('If account exists, reset link sent. Check your email.'); }
-    } catch { setMessage('Failed to send reset link.'); }
+      if (error) { setResetMsg(error.message || 'Failed to send reset link.'); }
+      else { setResetMsg('If an account exists, a reset link has been sent.'); }
+    } catch { setResetMsg('Failed to send reset link.'); }
     setResetSending(false);
   };
 
+  // Change password (requires active session)
   const handleChangePassword = async () => {
-    if (!newPassword || newPassword.length < 6) { setChangeMsg('Password must be at least 6 characters.'); return; }
-    if (newPassword !== confirmPassword) { setChangeMsg('Passwords do not match.'); return; }
+    if (!newPassword || newPassword.length < 8) {
+      setChangeMsg('Password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setChangeMsg('Passwords do not match.');
+      return;
+    }
     setChangeSending(true);
     try {
       const { error } = await supabase.auth.updateUser({ password: newPassword });
-      if (error) { setChangeMsg(error.message || 'Failed to update password.'); }
-      else { setChangeMsg('Password updated.'); setNewPassword(''); setConfirmPassword(''); setTimeout(() => setChangeMsg(''), 3000); }
-    } catch { setChangeMsg('Failed to update password.'); }
+      if (error) {
+        setChangeMsg(error.message || 'Failed to update password.');
+      } else {
+        setChangeMsg('Password updated successfully.');
+        setNewPassword('');
+        setConfirmPassword('');
+        setTimeout(() => setChangeMsg(''), 4000);
+      }
+    } catch {
+      setChangeMsg('Failed to update password.');
+    }
     setChangeSending(false);
   };
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setMessage('');
-    try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (!error) {
-        setAuth(true);
-        document.cookie = 'jrs-session=authenticated; path=/; max-age=86400';
-        return;
-      }
-    } catch {
-      // fall through to demo
-    }
-    // Demo fallback
-    if (email === 'admin@johnsonriseshine.gy' && password === 'admin') {
-      setAuth(true);
-      document.cookie = 'jrs-session=demo; path=/; max-age=86400';
-      setMessage('');
-    } else {
-      setMessage('Invalid credentials. Try admin@johnsonriseshine.gy / admin or use Supabase Auth.');
-    }
-  };
-
-  const promotePending = async (pendingId: string, verificationToken: string) => {
-    if (pendingPromoting === pendingId) return; // duplicate guard
+  // Promote a pending request
+  const promotePending = async (pendingId: string) => {
+    if (pendingPromoting === pendingId) return;
     setPendingPromoting(pendingId);
+    setPromotionError(null);
+    setPromotionSuccess(null);
+
     try {
       const res = await fetch('/api/promote-request', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''}` },
-        body: JSON.stringify({ token: verificationToken }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingId }),
       });
-      if (!res.ok) throw new Error('Promotion failed');
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setPromotionError(data.error || 'Promotion failed');
+        setPendingPromoting(null);
+        return;
+      }
+
+      // Success: remove from pending list and reload data
       setPendingRequests((prev) => prev.filter((p) => p.id !== pendingId));
-      // Refresh service requests by re-triggering load if needed; simpler: reload page or append on success.
-      // For this scope, removing from pending is sufficient indication.
+      setPromotionSuccess(`Request confirmed (ID: ${data.serviceRequestId ? String(data.serviceRequestId).slice(0, 8).toUpperCase() : 'OK'})`);
+      setTimeout(() => setPromotionSuccess(null), 4000);
+
+      // Refresh service requests
+      loadData();
     } catch (e) {
       console.error('Promotion error:', e);
+      setPromotionError('Network error — please try again.');
     }
     setPendingPromoting(null);
   };
 
-  const markCompleted = (ref: string) => {
-    setRequests((prev) => {
-      const next = prev.map((r) => r.ref === ref ? { ...r, status: 'completed' } : r);
-      try { localStorage.setItem('jrs-requests', JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
+  // Mark a service request as completed (local state + DB update)
+  const markCompleted = async (id: string) => {
+    const { error } = await supabase
+      .from('service_requests')
+      .update({ status: 'completed' })
+      .eq('id', id);
+
+    if (!error) {
+      setRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: 'completed' } : r));
+    }
   };
 
   const exportCSV = () => {
@@ -151,11 +235,26 @@ export default function AdminPage() {
   const formatDateGYT = (dateStr: string) => {
     if (!dateStr) return '-';
     try {
-      return new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/Guyana' }).format(new Date(dateStr));
+      return new Intl.DateTimeFormat('en-US', {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/Guyana',
+      }).format(new Date(dateStr));
     } catch { return dateStr; }
   };
 
   const filtered = filter === 'all' ? requests : requests.filter((r) => (r.status || 'pending') === filter);
+
+  // Loading state while checking session
+  if (authLoading) {
+    return (
+      <>
+        <Head><title>Admin - Johnson Rise & Shine</title></Head>
+        <main className="min-h-screen bg-green-50 flex items-center justify-center">
+          <p className="text-gray-500">Loading...</p>
+        </main>
+      </>
+    );
+  }
 
   return (
     <>
@@ -167,46 +266,34 @@ export default function AdminPage() {
             <form onSubmit={handleLogin} className="space-y-4 bg-white p-6 rounded-2xl shadow-md border border-green-100">
               {resetMode ? (
                 <>
-                  <input type="email" placeholder="admin@johnsonriseshine.gy" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
+                  <input type="email" placeholder="Your email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
                   <button type="button" disabled={resetSending} onClick={handleForgot} className={`w-full py-2.5 rounded-full text-white transition ${resetSending ? 'bg-forest/60 cursor-not-allowed' : 'bg-forest hover:bg-green-900'}`}>{resetSending ? 'Sending...' : 'Send Reset Link'}</button>
                   <button type="button" onClick={() => { setResetMode(false); setResetMsg(''); }} className="w-full text-xs text-forest hover:underline">Back to login</button>
                   {resetMsg && <p className={`text-sm ${resetMsg.includes('sent') ? 'text-green-700' : 'text-red-600'}`}>{resetMsg}</p>}
                 </>
               ) : (
                 <>
-                  <input type="email" placeholder="admin@johnsonriseshine.gy" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
+                  <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
                   <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
-                  <button type="button" onClick={() => setResetMode(true)} className="text-xs text-forest hover:underline">Forgot password?</button>
+                  <button type="submit" className="w-full bg-forest text-white py-2.5 rounded-full hover:bg-green-900">Login</button>
+                  <button type="button" onClick={() => setResetMode(true)} className="w-full text-xs text-forest hover:underline">Forgot password?</button>
+                  {loginError && <p className="text-red-600 text-sm">{loginError}</p>}
                 </>
               )}
-              {changeMode ? (
-                <>
-                  <input type="password" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
-                  <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full rounded-lg border px-4 py-2" />
-                  <button type="button" disabled={changeSending} onClick={handleChangePassword} className={`w-full py-2.5 rounded-full text-white transition ${changeSending ? 'bg-forest/60 cursor-not-allowed' : 'bg-forest hover:bg-green-900'}`}>{changeSending ? 'Updating...' : 'Update Password'}</button>
-                  <button type="button" onClick={() => { setChangeMode(false); setChangeMsg(''); setNewPassword(''); setConfirmPassword(''); }} className="w-full text-xs text-forest hover:underline">Back to login</button>
-                  {changeMsg && <p className={`text-sm ${changeMsg.includes('updated') ? 'text-green-700' : 'text-red-600'}`}>{changeMsg}</p>}
-                </>
-              ) : (
-                <button type="button" onClick={() => setChangeMode(true)} className="text-xs text-forest hover:underline">Change password</button>
-              )}
-              <button type="submit" className="w-full bg-forest text-white py-2.5 rounded-full hover:bg-green-900">Login</button>
-              {message && <p className="text-red-600 text-sm">{message}</p>}
             </form>
-            <p className="text-xs text-gray-400 mt-4">Note: Demo login for frontend prototype. Production uses Supabase Auth with role check.</p>
           </div>
         ) : (
           <div className="max-w-6xl mx-auto px-6 py-12">
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h1 className="font-serif text-3xl text-forest">Dashboard</h1>
-                <a href="/" onClick={() => { setAuth(false); document.cookie = 'jrs-session=; path=/; max-age=0'; }} className="text-xs text-forest hover:underline">Home / Logout</a>
+                <button onClick={handleLogout} className="text-xs text-forest hover:underline">Logout</button>
                 <div className="mt-4 pt-3 border-t border-green-100">
                   <h3 className="font-medium text-forest mb-2">Change Password</h3>
-                  <input type="password" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full rounded-lg border px-3 py-2 mb-2 text-sm" />
+                  <input type="password" placeholder="New password (min 8 chars)" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full rounded-lg border px-3 py-2 mb-2 text-sm" />
                   <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="w-full rounded-lg border px-3 py-2 mb-2 text-sm" />
                   <button type="button" disabled={changeSending} onClick={handleChangePassword} className={`w-full py-2 rounded-full text-white text-sm transition ${changeSending ? 'bg-forest/60 cursor-not-allowed' : 'bg-forest hover:bg-green-900'}`}>{changeSending ? 'Updating...' : 'Update Password'}</button>
-                  {changeMsg && <p className={`text-xs mt-1 ${changeMsg.includes('updated') ? 'text-green-700' : 'text-red-600'}`}>{changeMsg}</p>}
+                  {changeMsg && <p className={`text-xs mt-1 ${changeMsg.includes('successfully') ? 'text-green-700' : 'text-red-600'}`}>{changeMsg}</p>}
                 </div>
               </div>
               <button onClick={exportCSV} className="bg-gold text-forest px-4 py-2 rounded-full text-sm font-medium hover:bg-yellow-300">Export CSV</button>
@@ -221,9 +308,20 @@ export default function AdminPage() {
               <input id="biz-email" type="email" value={businessEmail} onChange={(e) => setBusinessEmail(e.target.value)} className="border border-green-200 rounded-lg px-3 py-1 text-sm w-72" placeholder="contact@johnsonriseshine.gy" />
               <button onClick={async () => { await supabase.from('business_settings').upsert({ key: 'email', value: businessEmail }); alert('Business email updated everywhere'); }} className="text-xs bg-forest text-white px-3 py-1.5 rounded-full hover:bg-green-900">Save to Supabase</button>
             </div>
+
+            {/* Status messages */}
+            {promotionSuccess && (
+              <div className="bg-green-100 border border-green-300 text-green-800 text-sm px-4 py-2 rounded-lg mb-4">{promotionSuccess}</div>
+            )}
+            {promotionError && (
+              <div className="bg-red-100 border border-red-300 text-red-800 text-sm px-4 py-2 rounded-lg mb-4">{promotionError}
+                <button onClick={() => setPromotionError(null)} className="ml-2 text-xs underline">Dismiss</button>
+              </div>
+            )}
+
             <h2 className="text-xl font-medium text-forest mb-2">Pending Requests</h2>
             {pendingRequests.length === 0 ? (
-              <p className="text-sm text-gray-500">No pending requests.</p>
+              <p className="text-sm text-gray-500 mb-6">No pending requests.</p>
             ) : (
               <table className="w-full bg-white rounded-2xl shadow border border-green-100 text-sm mb-6">
                 <thead className="bg-green-50"><tr><th className="text-left px-4 py-3">Ref</th><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Phone</th><th className="text-left px-4 py-3">Service</th><th className="text-left px-4 py-3">WhatsApp Opt-in</th><th className="text-left px-4 py-3">Created</th><th className="text-left px-4 py-3">Action</th></tr></thead>
@@ -239,14 +337,7 @@ export default function AdminPage() {
                       <td className="px-4 py-3">
                         <button
                           disabled={pendingPromoting === r.id}
-                          onClick={() => {
-                            // Call promotion endpoint; verification_token is NOT exposed in UI.
-                            // In production, this endpoint would use the admin session to retrieve
-                            // and confirm the token server-side without exposing it to the browser.
-                            // For now, we simulate promotion and refresh state without exposing token.
-                            // The actual secure path requires server-side retrieval or a different endpoint.
-                            alert('Promotion requires the server-side verification_token, which is not exposed to the browser for security. Use /api/promote-request with proper authorization.');
-                          }}
+                          onClick={() => promotePending(String(r.id))}
                           className={`text-xs px-2 py-0.5 rounded transition ${pendingPromoting === r.id ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-forest text-white hover:bg-green-900'}`}
                         >{pendingPromoting === r.id ? 'Promoting...' : 'Confirm'}</button>
                       </td>
@@ -262,7 +353,7 @@ export default function AdminPage() {
               <thead className="bg-green-50"><tr><th className="text-left px-4 py-3">Ref</th><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Phone</th><th className="text-left px-4 py-3">Status</th><th className="text-left px-4 py-3">Service</th><th className="text-left px-4 py-3">Actions</th></tr></thead>
               <tbody>
                 {filtered.map((r) => (
-                  <tr key={r.ref} className="border-t">
+                  <tr key={r.id} className="border-t">
                     <td className="px-4 py-3 font-mono text-xs">{r.ref}</td>
                     <td className="px-4 py-3">{r.name}</td>
                     <td className="px-4 py-3">{r.phone}</td>
@@ -270,7 +361,9 @@ export default function AdminPage() {
                     <td className="px-4 py-3">{r.service}</td>
                     <td className="px-4 py-3 space-x-2">
                       <a href={`https://wa.me/5926992175?text=Update%20on%20request%20${r.ref}`} target="_blank" rel="noopener noreferrer" className="text-forest hover:underline text-xs">WhatsApp</a>
-                      <button onClick={() => markCompleted(r.ref)} className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded hover:bg-green-200">Complete</button>
+                      {r.status !== 'completed' && (
+                        <button onClick={() => markCompleted(r.id)} className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded hover:bg-green-200">Complete</button>
+                      )}
                     </td>
                   </tr>
                 ))}

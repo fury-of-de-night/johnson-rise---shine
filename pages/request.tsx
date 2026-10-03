@@ -161,7 +161,8 @@ export default function RequestPage() {
           email: form.email.trim(),
           address: form.region.trim() + ', ' + form.village.trim(),
           service_type: form.services.join(', '),
-          description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}\nWhatsApp Opt-in: ${form.whatsappOptIn}`,
+          description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}`,
+          whatsapp_confirmed: form.whatsappOptIn === true,
         },
       }),
     });
@@ -178,8 +179,10 @@ export default function RequestPage() {
     }
 
     // The server-side /api/verify-recaptcha handles insertion into
-    // pending_service_requests with a server-generated verification_token.
-    // We just confirm the response has a pendingId to show success.
+    // pending_service_requests with a server-generated verification token.
+    // The token's SHA-256 hash (verification_token_hash) is stored; the
+    // raw token is never returned to the browser. A separate reCAPTCHA token
+    // is verified server-side and discarded.
     if (verifyData.pendingId) {
       setRefNumber('JRS-' + String(verifyData.pendingId).slice(0, 8).toUpperCase());
       setSubmitted(true);

@@ -1,9 +1,13 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { createClient } from '@supabase/supabase-js';
+import { randomUUID, createHash } from 'crypto';
 
-const supabase = createClient(
+// Server-side: use service role key for trusted INSERT into pending_service_requests.
+// The anon role has no table INSERT privilege, so the publishable key cannot insert.
+// This key is never exposed to the browser — it exists only in server env vars.
+const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
+  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 
 export default async function handler(
@@ -27,15 +31,15 @@ export default async function handler(
 
   try {
     const now = new Date();
-    const { data: rows } = await supabase.from('rate_limits').select('*').eq('ip', ip.trim()).gte('reset_at', now.toISOString()).limit(1);
+    const { data: rows } = await supabaseAdmin.from('rate_limits').select('*').eq('ip', ip.trim()).gte('reset_at', now.toISOString()).limit(1);
     if (rows && rows.length > 0) {
       const row = rows[0];
       if (row.count >= 5) {
         return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
       }
-      await supabase.from('rate_limits').update({ count: row.count + 1 }).eq('id', row.id);
+      await supabaseAdmin.from('rate_limits').update({ count: row.count + 1 }).eq('id', row.id);
     } else {
-      await supabase.from('rate_limits').insert({ ip: ip.trim(), count: 1, reset_at: new Date(Date.now() + 3600000).toISOString() });
+      await supabaseAdmin.from('rate_limits').insert({ ip: ip.trim(), count: 1, reset_at: new Date(Date.now() + 3600000).toISOString() });
     }
   } catch (e) {
     console.error('Rate limit DB error:', e);
@@ -76,12 +80,12 @@ export default async function handler(
     }
 
     // reCAPTCHA token verified — discard it.
-    // Generate a server-side application verification_token for the pending request.
-    // This is NOT the reCAPTCHA token. It is a separate, single-use application token
-    // used by verify-service-request to promote the row to service_requests.
-    const verificationToken = crypto.randomUUID();
+    // Generate a server-side verification token and store its SHA-256 hash.
+    // The raw token is never stored or returned to the client.
+    const verificationToken = randomUUID();
+    const tokenHash = createHash('sha256').update(verificationToken).digest('hex');
 
-    const { data: inserted, error: insertError } = await supabase
+    const { data: inserted, error: insertError } = await supabaseAdmin
       .from('pending_service_requests')
       .insert({
         customer_name: String(formData.customer_name || '').trim(),
@@ -90,8 +94,9 @@ export default async function handler(
         address: String(formData.address || '').trim(),
         service_type: String(formData.service_type || '').trim(),
         description: String(formData.description || '').trim(),
-        whatsapp_confirmed: false,
-        verification_token: verificationToken,
+        whatsapp_confirmed: formData.whatsapp_confirmed === true,
+        verification_token_hash: tokenHash,
+        verification_expires_at: new Date(Date.now() + 3600000).toISOString(),
       })
       .select('id')
       .single();
@@ -101,7 +106,9 @@ export default async function handler(
       return res.status(500).json({ error: 'Failed to create request.' });
     }
 
-    // reCAPTCHA token is NOT stored. verification_token is the application token.
+    // The Google reCAPTCHA token is NOT stored. The server generates a
+    // transient verification token and stores only its SHA-256 hash
+    // (verification_token_hash) in the DB; the raw token is never exposed.
     return res.status(200).json({ success: true, score: data.score, pendingId: inserted.id });
   } catch (error) {
     console.error('Error verifying reCAPTCHA:', error);
