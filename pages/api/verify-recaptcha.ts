@@ -6,7 +6,7 @@ import { randomUUID, createHash } from 'crypto';
 // The anon role has no table INSERT privilege, so the publishable key cannot insert.
 // This key is never exposed to the browser — it exists only in server env vars.
 const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.SUPABASE_URL || '',
   process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 

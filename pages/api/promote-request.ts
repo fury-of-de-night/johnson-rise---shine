@@ -33,8 +33,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   //    Uses the publishable key (anon) but overrides with the user's real access token.
   //    This ensures the RPC runs AS the authenticated user, not as service-role.
   //    The RPC itself checks auth.uid() and private.is_admin().
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
+  const supabaseUrl = process.env.SUPABASE_URL || '';
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
   const supabaseUser = createClient(supabaseUrl, supabaseAnonKey, {
     global: {
