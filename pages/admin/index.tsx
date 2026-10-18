@@ -30,6 +30,14 @@ export default function AdminPage() {
   const [businessEmail, setBusinessEmail] = useState('admin@johnsonriseshine.gy');
   const [filter, setFilter] = useState('all');
 
+  // Scroll important errors into view smoothly
+  const scrollToError = useCallback((id?: string) => {
+    setTimeout(() => {
+      const target = id ? document.getElementById(id) : document.getElementById('admin-error-area');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }, []);
+
   // Check existing Supabase Auth session on mount
   useEffect(() => {
     const checkSession = async () => {
@@ -66,7 +74,7 @@ export default function AdminPage() {
     if (!srErr && srData) {
       setRequests(srData.map((r: any) => ({
         id: r.id,
-        ref: r.id ? String(r.id).slice(0, 8).toUpperCase() : 'JRS-?',
+        ref: r.customer_ref || 'JRS-?',
         name: r.customer_name || '-',
         phone: r.phone || '-',
         status: r.status || 'pending',
@@ -77,13 +85,14 @@ export default function AdminPage() {
     // Load pending requests (no token hash exposed — select only safe columns)
     const { data: prData, error: prErr } = await supabase
       .from('pending_service_requests')
-      .select('id, customer_name, phone, email, address, service_type, description, whatsapp_confirmed, created_at')
+      .select('id, customer_ref, customer_name, phone, email, address, service_type, description, whatsapp_confirmed, created_at')
       .order('created_at', { ascending: false });
 
     if (!prErr && prData) {
       setPendingRequests(prData.map((r: any) => ({
         id: r.id,
-        ref: 'PENDING-' + (r.id ? String(r.id).slice(0, 6).toUpperCase() : ''),
+        ref: r.customer_ref ? ('PENDING-' + r.customer_ref) : ('PENDING-' + (r.id ? String(r.id).slice(0, 6).toUpperCase() : '')),
+        customerRef: r.customer_ref || null,
         name: r.customer_name || '-',
         phone: r.phone || '-',
         email: r.email || '-',
@@ -91,11 +100,22 @@ export default function AdminPage() {
         service: r.service_type || '-',
         whatsappConfirmed: r.whatsapp_confirmed,
         createdAt: r.created_at,
+        description: r.description || '',
       })));
     }
   }, [auth]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Auto-refresh pending requests every 60s; skip if promotion in progress; clean up on unmount
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!pendingPromoting) {
+        loadData();
+      }
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [loadData, pendingPromoting]);
 
   // Real Supabase Auth login
   const handleLogin = async (e: React.FormEvent) => {
@@ -104,6 +124,7 @@ export default function AdminPage() {
 
     if (!email.trim() || !password) {
       setLoginError('Email and password are required.');
+      scrollToError();
       return;
     }
 
@@ -115,12 +136,14 @@ export default function AdminPage() {
 
       if (error) {
         setLoginError(error.message || 'Login failed.');
+        scrollToError();
         return;
       }
 
       // Auth state change listener will set auth=true
     } catch {
       setLoginError('Login failed. Please try again.');
+      scrollToError();
     }
   };
 
@@ -183,9 +206,16 @@ export default function AdminPage() {
     setPromotionSuccess(null);
 
     try {
+      // Get the current authenticated user's access token from the Supabase client
+      const { data: { session } } = await supabase.auth.getSession();
+      const accessToken = session?.access_token;
+
       const res = await fetch('/api/promote-request', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
+        },
         body: JSON.stringify({ pendingId }),
       });
 
@@ -193,13 +223,18 @@ export default function AdminPage() {
 
       if (!res.ok) {
         setPromotionError(data.error || 'Promotion failed');
+        scrollToError('admin-error-area');
         setPendingPromoting(null);
         return;
       }
 
       // Success: remove from pending list and reload data
       setPendingRequests((prev) => prev.filter((p) => p.id !== pendingId));
-      setPromotionSuccess(`Request confirmed (ID: ${data.serviceRequestId ? String(data.serviceRequestId).slice(0, 8).toUpperCase() : 'OK'})`);
+      // data.customerRef is the JRS-XXXXXXXXXX reference from the promoted pending row.
+      // Legacy requests (pre-008) have no customer_ref; show a neutral confirmation instead
+      // of the literal string 'OK', which could be mistaken for a valid reference value.
+      const displayRef = data.customerRef ? `Ref: ${data.customerRef}` : 'request confirmed (no reference on file)';
+      setPromotionSuccess(`Request confirmed — ${displayRef}`);
       setTimeout(() => setPromotionSuccess(null), 4000);
 
       // Refresh service requests
@@ -207,6 +242,7 @@ export default function AdminPage() {
     } catch (e) {
       console.error('Promotion error:', e);
       setPromotionError('Network error — please try again.');
+      scrollToError('admin-error-area');
     }
     setPendingPromoting(null);
   };
@@ -324,14 +360,16 @@ export default function AdminPage() {
               <p className="text-sm text-gray-500 mb-6">No pending requests.</p>
             ) : (
               <table className="w-full bg-white rounded-2xl shadow border border-green-100 text-sm mb-6">
-                <thead className="bg-green-50"><tr><th className="text-left px-4 py-3">Ref</th><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Phone</th><th className="text-left px-4 py-3">Service</th><th className="text-left px-4 py-3">WhatsApp Opt-in</th><th className="text-left px-4 py-3">Created</th><th className="text-left px-4 py-3">Action</th></tr></thead>
+                <thead className="bg-green-50"><tr><th className="text-left px-4 py-3">Ref</th><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Phone</th><th className="text-left px-4 py-3">Email</th><th className="text-left px-4 py-3">Service</th><th className="text-left px-4 py-3">Description</th><th className="text-left px-4 py-3">WhatsApp Opt-in</th><th className="text-left px-4 py-3">Requested</th><th className="text-left px-4 py-3">Action</th></tr></thead>
                 <tbody>
                   {pendingRequests.map((r: any) => (
                     <tr key={r.id} className="border-t">
-                      <td className="px-4 py-3 font-mono text-xs">{r.ref}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{r.customerRef || r.ref}</td>
                       <td className="px-4 py-3">{r.name}</td>
                       <td className="px-4 py-3">{r.phone}</td>
+                      <td className="px-4 py-3 text-xs">{r.email || '-'}</td>
                       <td className="px-4 py-3">{r.service}</td>
+                      <td className="px-4 py-3 text-xs text-gray-600 max-w-xs truncate">{r.description ? (String(r.description).slice(0, 60) || '-') : '-'}</td>
                       <td className="px-4 py-3"><span className={r.whatsappConfirmed ? 'text-green-700' : 'text-gray-400'}>{r.whatsappConfirmed ? 'Yes' : 'No'}</span></td>
                       <td className="px-4 py-3 text-xs text-gray-500">{r.createdAt ? formatDateGYT(r.createdAt) : '-'}</td>
                       <td className="px-4 py-3">

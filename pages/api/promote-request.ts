@@ -4,29 +4,45 @@ import { createClient } from '@supabase/supabase-js';
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // 1. Extract the Supabase Auth access token from cookies
-  const cookieHeader = req.headers.cookie || '';
-  // Supabase stores auth as sb-<ref>-auth-token; the value is a JSON-encoded
-  // array [access_token, refresh_token] or a base64 blob depending on version.
-  const sessionMatch = cookieHeader.match(/sb-[a-z0-9-]+-auth-token=([^;]+)/i);
+  // 1. Extract the Supabase Auth access token from Authorization header or cookies
+  let accessToken: string | null = null;
 
-  if (!sessionMatch) {
-    return res.status(401).json({ error: 'Unauthorized: no session found' });
+  // Try Authorization: Bearer <token> header first
+  const authHeader = req.headers.authorization || '';
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (bearerMatch) {
+    accessToken = bearerMatch[1];
   }
 
-  let accessToken: string;
-  try {
-    // Try to decode as JSON array first (Supabase v2 cookie format)
-    const decoded = decodeURIComponent(sessionMatch[1]);
-    const parsed = JSON.parse(decoded);
-    accessToken = Array.isArray(parsed) ? parsed[0] : parsed.access_token || decoded;
-  } catch {
-    // If not JSON, use the raw value (base64 JWT)
-    accessToken = decodeURIComponent(sessionMatch[1]);
+  // Fallback to cookie extraction (sb-<ref>-auth-token) if no Bearer header
+  if (!accessToken) {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionMatch = cookieHeader.match(/sb-[a-z0-9-]+-auth-token=([^;]+)/i);
+
+    if (!sessionMatch) {
+      return res.status(401).json({ error: 'Unauthorized: no session found' });
+    }
+
+    let cookieAccessToken: string;
+    try {
+      // Try to decode as JSON array first (Supabase v2 cookie format)
+      const decoded = decodeURIComponent(sessionMatch[1]);
+      const parsed = JSON.parse(decoded);
+      cookieAccessToken = Array.isArray(parsed) ? parsed[0] : parsed.access_token || decoded;
+    } catch {
+      // If not JSON, use the raw value (base64 JWT)
+      cookieAccessToken = decodeURIComponent(sessionMatch[1]);
+    }
+
+    if (!cookieAccessToken) {
+      return res.status(401).json({ error: 'Unauthorized: invalid session' });
+    }
+
+    accessToken = cookieAccessToken;
   }
 
   if (!accessToken) {
-    return res.status(401).json({ error: 'Unauthorized: invalid session' });
+    return res.status(401).json({ error: 'Unauthorized: no session found' });
   }
 
   // 2. Create a Supabase client scoped to THIS user's session.
@@ -59,6 +75,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   //    The database function verifies auth.uid() and private.is_admin() internally.
   //    If the user isn't an admin, the RPC will raise an exception.
   try {
+    // 1. Authorize: fetch the specific pending request BEFORE promotion.
+    // The user-scoped client (supabaseUser) ensures we don't expose
+    // references for rows the caller isn't authorized to see/promote.
+    const { data: pendingRow, error: lookupErr } = await supabaseUser
+      .from('pending_service_requests')
+      .select('customer_ref')
+      .eq('id', pendingId)
+      .maybeSingle();
+
+    if (lookupErr) {
+      console.error('Pending lookup error:', lookupErr);
+      return res.status(500).json({ error: 'Failed to verify pending request.' });
+    }
+    if (!pendingRow) {
+      return res.status(404).json({ error: 'Pending request not found.' });
+    }
+
+    const customerRef = pendingRow.customer_ref || null;
+
+    // 2. Call the atomic promotion RPC (authorization verified inside RPC
+    // via auth.uid() + private.is_admin()); do not weaken it.
     const { data: newRequestId, error: rpcErr } = await supabaseUser.rpc(
       'promote_pending_service_request',
       { p_pending_id: pendingId }
@@ -77,8 +114,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(500).json({ error: 'Promotion failed' });
     }
 
-    // 6. Return only the new service request ID — no tokens, no customer secrets
-    return res.status(200).json({ success: true, serviceRequestId: newRequestId });
+    // 6. Promotion succeeded. Return serviceRequestId and the preserved
+    // customer_ref that was read from the pending row before promotion.
+    return res.status(200).json({ success: true, serviceRequestId: newRequestId, customerRef });
   } catch (e: any) {
     console.error('Promotion error:', e);
     return res.status(500).json({ error: 'Promotion failed' });

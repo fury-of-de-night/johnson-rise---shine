@@ -1,6 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID, createHash } from 'crypto';
+import { isDisposableEmail } from '@/lib/disposable-blocklist';
+import { generateSecureCustomerRef } from '@/lib/security';
 
 // Server-side: use service role key for trusted INSERT into pending_service_requests.
 // The anon role has no table INSERT privilege, so the publishable key cannot insert.
@@ -79,37 +81,63 @@ export default async function handler(
       return res.status(400).json({ error: 'reCAPTCHA verification failed' });
     }
 
-    // reCAPTCHA token verified — discard it.
-    // Generate a server-side verification token and store its SHA-256 hash.
-    // The raw token is never stored or returned to the client.
+    // Authoritative server-side disposable email check (before any DB insert)
+    const emailRaw = String(formData.email || '').trim();
+    if (isDisposableEmail(emailRaw)) {
+      console.warn('Disposable email blocked server-side:', emailRaw);
+      return res.status(400).json({ error: 'Disposable email not allowed.' });
+    }
+
+    // Generate customer reference and perform atomic registry + pending insert
     const verificationToken = randomUUID();
     const tokenHash = createHash('sha256').update(verificationToken).digest('hex');
 
-    const { data: inserted, error: insertError } = await supabaseAdmin
-      .from('pending_service_requests')
-      .insert({
-        customer_name: String(formData.customer_name || '').trim(),
-        phone: String(formData.phone || '').trim(),
-        email: String(formData.email || '').trim(),
-        address: String(formData.address || '').trim(),
-        service_type: String(formData.service_type || '').trim(),
-        description: String(formData.description || '').trim(),
-        whatsapp_confirmed: formData.whatsapp_confirmed === true,
-        verification_token_hash: tokenHash,
-        verification_expires_at: new Date(Date.now() + 3600000).toISOString(),
-      })
-      .select('id')
-      .single();
+    // Retry loop: collision (registry PK conflict) must roll back the whole
+    // transaction, so generate a new reference and retry up to 5 attempts.
+    const MAX_ATTEMPTS = 5;
+    let pendingId: string | null = null;
+    let customerRef: string | null = null;
 
-    if (insertError || !inserted) {
-      console.error('Failed to create pending request:', insertError);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      customerRef = generateSecureCustomerRef();
+
+      const { data: rpcPendingId, error: rpcError } = await supabaseAdmin.rpc(
+        'create_pending_service_request',
+        {
+          p_customer_ref: customerRef,
+          p_customer_name: String(formData.customer_name || '').trim(),
+          p_phone: String(formData.phone || '').trim(),
+          p_email: String(formData.email || '').trim(),
+          p_address: String(formData.address || '').trim(),
+          p_service_type: String(formData.service_type || '').trim(),
+          p_description: String(formData.description || '').trim(),
+          p_whatsapp_confirmed: formData.whatsapp_confirmed === true,
+          p_verification_token_hash: tokenHash,
+          p_verification_expires_at: new Date(Date.now() + 3600000).toISOString(),
+        }
+      );
+
+      if (!rpcError && rpcPendingId) {
+        pendingId = rpcPendingId;
+        break;
+      }
+
+      // Only treat registry-PK collision as retryable; other DB errors fail immediately.
+      if (rpcError && rpcError.message.includes('Customer reference collision')) {
+        if (attempt < MAX_ATTEMPTS) continue;
+        return res.status(409).json({ error: 'Unable to generate a unique reference. Please try again.' });
+      }
+
+      console.error('Atomic pending creation RPC failed (non-collision):', rpcError);
       return res.status(500).json({ error: 'Failed to create request.' });
     }
 
-    // The Google reCAPTCHA token is NOT stored. The server generates a
-    // transient verification token and stores only its SHA-256 hash
-    // (verification_token_hash) in the DB; the raw token is never exposed.
-    return res.status(200).json({ success: true, score: data.score, pendingId: inserted.id });
+    if (!pendingId || !customerRef) {
+      return res.status(500).json({ error: 'Failed to create request.' });
+    }
+
+    // The registry is created automatically by the RPC (atomic). Return the reference to the customer.
+    return res.status(200).json({ success: true, score: data.score, pendingId, customerRef });
   } catch (error) {
     console.error('Error verifying reCAPTCHA:', error);
     return res.status(500).json({ error: 'Failed to verify reCAPTCHA' });

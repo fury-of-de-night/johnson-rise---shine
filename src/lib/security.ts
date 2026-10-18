@@ -38,7 +38,17 @@ export function sanitizeXss(input: string): string {
   return s;
 }
 
-/** Rate limit by IP: max 5 requests per rolling hour. Returns true if allowed. */
+/** Generate a new 10-character 36-character uppercase alphanumeric customer reference (14 chars total with JRS- prefix). */
+export function generateSecureCustomerRef(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let ref = '';
+  for (let i = 0; i < 10; i++) {
+    // crypto.randomInt is unbiased in Node 18+; avoids modulo bias
+    const val = crypto.randomInt(chars.length);
+    ref += chars[val];
+  }
+  return 'JRS-' + ref;
+}
 export function checkRateLimit(ip: string): boolean {
   const now = Date.now();
   const windowMs = 60 * 60 * 1000; // 1 hour

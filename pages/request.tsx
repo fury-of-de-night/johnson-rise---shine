@@ -70,6 +70,15 @@ export default function RequestPage() {
 
   const sanitize = (str: string) => str.replace(/[<>"'&]/g, (c) => ({ '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;', '&':'&amp;' }[c as string] || c));
 
+  const scrollToFirstError = (errors: Record<string, string>) => {
+    const firstKey = Object.keys(errors)[0];
+    if (!firstKey) return;
+    setTimeout(() => {
+      const el = document.getElementById(firstKey);
+      if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.focus(); }
+    }, 50);
+  };
+
   const validate = (): boolean => {
     const e: Record<string, string> = {};
     if (!form.name || form.name.trim().length < 2) e.name = 'Name must be at least 2 characters.';
@@ -90,11 +99,7 @@ export default function RequestPage() {
     }
     setErrors(e);
     if (Object.keys(e).length > 0) {
-      setTimeout(() => {
-        const firstKey = Object.keys(e)[0];
-        const el = document.getElementById(firstKey);
-        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.focus(); }
-      }, 50);
+      scrollToFirstError(e);
     }
     return Object.keys(e).length === 0;
   };
@@ -103,12 +108,11 @@ export default function RequestPage() {
     e.preventDefault();
     setSubmitting(true);
     if (!validate()) { setSubmitting(false); return; }
-    const ref = 'JRS-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
 
     if (!recaptchaReady) {
       setSubmitting(false);
-      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA is still loading, please try again.' }));
-      return;
+      const err = { ...errors, recaptcha: 'reCAPTCHA is still loading, please try again.' };
+      setErrors(err); scrollToFirstError(err); return;
     }
 
     const siteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
@@ -116,11 +120,8 @@ export default function RequestPage() {
     if (!siteKey) {
       console.error('reCAPTCHA site key is missing from the client build.');
       setSubmitting(false);
-      setErrors((prev) => ({
-        ...prev,
-        recaptcha: 'reCAPTCHA is not configured correctly. Please try again later.',
-      }));
-      return;
+      const err = { ...errors, recaptcha: 'reCAPTCHA is not configured correctly. Please try again later.' };
+      setErrors(err); scrollToFirstError(err); return;
     }
 
     const recaptchaToken = await new Promise<string>((resolve, reject) => {
@@ -146,8 +147,8 @@ export default function RequestPage() {
 
     if (!recaptchaToken) {
       setSubmitting(false);
-      setErrors((prev) => ({ ...prev, recaptcha: 'Please complete the reCAPTCHA verification.' }));
-      return;
+      const err = { ...errors, recaptcha: 'Please complete the reCAPTCHA verification.' };
+      setErrors(err); scrollToFirstError(err); return;
     }
 
     const verifyRes = await fetch('/api/verify-recaptcha', {
@@ -169,13 +170,13 @@ export default function RequestPage() {
     const verifyData = await verifyRes.json();
     if (!verifyRes.ok || !verifyData.success) {
       setSubmitting(false);
-      setErrors((prev) => ({ ...prev, recaptcha: 'reCAPTCHA verification failed. Please try again.' }));
-      return;
+      const err = { ...errors, recaptcha: 'reCAPTCHA verification failed. Please try again.' };
+      setErrors(err); scrollToFirstError(err); return;
     }
     if (isDisposableEmail(form.email.trim())) {
       setSubmitting(false);
-      setErrors((prev) => ({ ...prev, email: 'Disposable email not allowed.' }));
-      return;
+      const err = { ...errors, email: 'Disposable email not allowed.' };
+      setErrors(err); scrollToFirstError(err); return;
     }
 
     // The server-side /api/verify-recaptcha handles insertion into
@@ -184,12 +185,12 @@ export default function RequestPage() {
     // raw token is never returned to the browser. A separate reCAPTCHA token
     // is verified server-side and discarded.
     if (verifyData.pendingId) {
-      setRefNumber('JRS-' + String(verifyData.pendingId).slice(0, 8).toUpperCase());
+      setRefNumber(verifyData.customerRef || 'JRS-?');
       setSubmitted(true);
       setErrorState('');
       try { localStorage.removeItem('jrs-request-form'); } catch { /* ignore */ }
       if (viaWhatsApp) {
-        const msg = `Service Request (${ref})%0AName: ${encodeURIComponent(sanitize(form.name.trim()))}`;
+        const msg = `Service Request (${verifyData.customerRef || refNumber})%0AName: ${encodeURIComponent(sanitize(form.name.trim()))}`;
         window.open(`https://wa.me/5926992175?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
       }
       setSubmitting(false);
@@ -198,7 +199,8 @@ export default function RequestPage() {
 
     // If no pendingId returned (should not happen if success==true), fall back.
     setSubmitting(false);
-    setErrors((prev) => ({ ...prev, recaptcha: 'Failed to create request record.' }));
+    const err = { ...errors, recaptcha: 'Failed to create request record.' };
+    setErrors(err); scrollToFirstError(err);
   };
 
   const toggleService = (s: string) => {
@@ -228,6 +230,7 @@ export default function RequestPage() {
           <div className="bg-green-50 border border-green-200 rounded-2xl p-8 text-center shadow-sm">
             <h2 className="font-serif text-2xl text-forest mb-2">Request Submitted</h2>
             <p className="text-gray-700 mb-1">Reference number: <strong className="text-forest">{refNumber}</strong></p>
+            <p className="text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">Please save this reference number. You may need it later to identify or follow up on your request.</p>
             <p className="text-sm text-gray-500 mb-6">Saved to local storage. You can reference this number when messaging us on WhatsApp.</p>
             <a href={`https://wa.me/5926992175?text=Following%20up%20on%20request%20${refNumber}`} target="_blank" rel="noopener noreferrer" className="inline-block bg-forest text-white px-6 py-3 rounded-full font-medium hover:bg-green-900 transition">Continue on WhatsApp</a>
           </div>
