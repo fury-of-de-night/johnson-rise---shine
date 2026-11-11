@@ -31,7 +31,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       cookieAccessToken = Array.isArray(parsed) ? parsed[0] : parsed.access_token || decoded;
     } catch {
       // If not JSON, use the raw value (base64 JWT)
-      cookieAccessToken = decodeURIComponent(sessionMatch[1]);
+      try { cookieAccessToken = decodeURIComponent(sessionMatch[1]); }
+      catch { return res.status(401).json({ error: 'Unauthorized: invalid session' }); }
     }
 
     if (!cookieAccessToken) {
@@ -49,32 +50,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   //    Uses the publishable key (anon) but overrides with the user's real access token.
   //    This ensures the RPC runs AS the authenticated user, not as service-role.
   //    The RPC itself checks auth.uid() and private.is_admin().
-  const supabaseUrl = process.env.SUPABASE_URL || '';
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
-  const supabaseUser = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    },
-  });
+  if (!supabaseUrl || !supabaseAnonKey) return res.status(503).json({ error: 'Admin requests are temporarily unavailable.' });
 
-  // 3. Verify the user is actually authenticated (don't trust the token blindly)
-  const { data: userData, error: userErr } = await supabaseUser.auth.getUser(accessToken);
-  if (userErr || !userData?.user) {
-    return res.status(401).json({ error: 'Unauthorized: invalid or expired session' });
-  }
-
-  // 4. Validate the pendingId parameter is a UUID
-  const { pendingId } = req.body;
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!pendingId || typeof pendingId !== 'string' || !uuidRegex.test(pendingId)) {
-    return res.status(400).json({ error: 'Invalid pending request ID' });
-  }
-
-  // 5. Call the atomic promotion RPC as the authenticated user.
-  //    The database function verifies auth.uid() and private.is_admin() internally.
-  //    If the user isn't an admin, the RPC will raise an exception.
   try {
+    const supabaseUser = createClient(supabaseUrl, supabaseAnonKey, {
+      global: {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    });
+
+    // 3. Verify the user is actually authenticated (don't trust the token blindly)
+    const { data: userData, error: userErr } = await supabaseUser.auth.getUser(accessToken);
+    if (userErr || !userData?.user) {
+      return res.status(401).json({ error: 'Unauthorized: invalid or expired session' });
+    }
+
+    // 4. Validate the pendingId parameter is a UUID
+    const { pendingId } = req.body || {};
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!pendingId || typeof pendingId !== 'string' || !uuidRegex.test(pendingId)) {
+      return res.status(400).json({ error: 'Invalid pending request ID' });
+    }
+
+    // 5. Call the atomic promotion RPC as the authenticated user.
+    //    The database function verifies auth.uid() and private.is_admin() internally.
+    //    If the user isn't an admin, the RPC will raise an exception.
     // 1. Authorize: fetch the specific pending request BEFORE promotion.
     // The user-scoped client (supabaseUser) ensures we don't expose
     // references for rows the caller isn't authorized to see/promote.
@@ -85,7 +88,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .maybeSingle();
 
     if (lookupErr) {
-      console.error('Pending lookup error:', lookupErr);
+      console.error('Pending lookup failed', { code: lookupErr.code });
       return res.status(500).json({ error: 'Failed to verify pending request.' });
     }
     if (!pendingRow) {
@@ -108,17 +111,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(403).json({ error: 'Forbidden: admin role required' });
       }
       if (msg.includes('not found') || msg.includes('no longer pending')) {
-        return res.status(400).json({ error: msg });
+        return res.status(400).json({ error: 'Request was already processed or is no longer pending.' });
       }
-      console.error('Promotion RPC error:', rpcErr);
+      console.error('Promotion RPC failed', { code: rpcErr.code });
       return res.status(500).json({ error: 'Promotion failed' });
     }
 
     // 6. Promotion succeeded. Return serviceRequestId and the preserved
     // customer_ref that was read from the pending row before promotion.
     return res.status(200).json({ success: true, serviceRequestId: newRequestId, customerRef });
-  } catch (e: any) {
-    console.error('Promotion error:', e);
-    return res.status(500).json({ error: 'Promotion failed' });
+  } catch {
+    return res.status(503).json({ error: 'Admin requests are temporarily unavailable.' });
   }
 }

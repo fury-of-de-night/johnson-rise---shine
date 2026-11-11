@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent } from 'react';
+import { useState, useEffect, useRef, FormEvent } from 'react';
 
 // reCAPTCHA types
 declare global {
@@ -15,21 +15,8 @@ import Script from 'next/script';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import WhatsAppFloatButton from '@/components/WhatsAppFloatButton';
-import { supabase } from '@/lib/supabase';
+import { servicesList } from '@/lib/request-validation';
 import { isDisposableEmail } from '@/lib/disposable-blocklist';
-
-const servicesList = [
-  "Lawn Installation & Maintenance",
-  "Tree & Shrub Pruning",
-  "Garden Design & Planting",
-  "Hardscaping - Paths & Patios",
-  "Irrigation Systems",
-  "Land Clearing & Grading",
-  "Fencing & Boundary Work",
-  "Ornamental Lighting",
-  "Compost & Soil Health",
-  "Seasonal Cleanup",
-];
 
 export default function RequestPage() {
   const [form, setForm] = useState({
@@ -45,6 +32,8 @@ export default function RequestPage() {
     whatsappOptIn: false,
     consent: false,
   });
+  const inFlight = useRef(false);
+  const [uncertain, setUncertain] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
@@ -67,8 +56,6 @@ export default function RequestPage() {
       localStorage.setItem('jrs-request-form', JSON.stringify({ ...form, timestamp: new Date().toISOString() }));
     } catch { /* ignore */ }
   }, [form]);
-
-  const sanitize = (str: string) => str.replace(/[<>"'&]/g, (c) => ({ '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;', '&':'&amp;' }[c as string] || c));
 
   const scrollToFirstError = (errors: Record<string, string>) => {
     const firstKey = Object.keys(errors)[0];
@@ -106,101 +93,80 @@ export default function RequestPage() {
 
   const handleSubmit = async (e: FormEvent, viaWhatsApp = false) => {
     e.preventDefault();
+    if (inFlight.current || uncertain || submitted || !validate()) return;
+    inFlight.current = true;
     setSubmitting(true);
-    if (!validate()) { setSubmitting(false); return; }
-
-    if (!recaptchaReady) {
-      setSubmitting(false);
-      const err = { ...errors, recaptcha: 'reCAPTCHA is still loading, please try again.' };
-      setErrors(err); scrollToFirstError(err); return;
-    }
-
-    const siteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
-
-    if (!siteKey) {
-      console.error('reCAPTCHA site key is missing from the client build.');
-      setSubmitting(false);
-      const err = { ...errors, recaptcha: 'reCAPTCHA is not configured correctly. Please try again later.' };
-      setErrors(err); scrollToFirstError(err); return;
-    }
-
-    const recaptchaToken = await new Promise<string>((resolve, reject) => {
-      if (
-        !window.grecaptcha ||
-        typeof window.grecaptcha.ready !== 'function' ||
-        typeof window.grecaptcha.execute !== 'function'
-      ) {
-        reject(new Error('reCAPTCHA API is not available'));
+    setErrorState('');
+    let sent = false;
+    try {
+      if (!recaptchaReady || !process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY) {
+        setErrors({ recaptcha: 'reCAPTCHA is unavailable. Please try later or contact us on WhatsApp.' });
         return;
       }
-
-      window.grecaptcha.ready(() => {
-        window.grecaptcha
-          .execute(siteKey, { action: 'submit' })
-          .then(resolve)
-          .catch(reject);
+      const token = await new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('CAPTCHA_TIMEOUT')), 15000);
+        if (!window.grecaptcha?.ready || !window.grecaptcha?.execute) {
+          clearTimeout(timeout); reject(new Error('CAPTCHA_UNAVAILABLE')); return;
+        }
+        window.grecaptcha.ready(() => {
+          window.grecaptcha.execute(process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!, { action: 'submit' })
+            .then(resolve, reject).finally(() => clearTimeout(timeout));
+        });
       });
-    }).catch((error) => {
-      console.error('reCAPTCHA execute error:', error);
-      return null;
-    });
-
-    if (!recaptchaToken) {
-      setSubmitting(false);
-      const err = { ...errors, recaptcha: 'Please complete the reCAPTCHA verification.' };
-      setErrors(err); scrollToFirstError(err); return;
-    }
-
-    const verifyRes = await fetch('/api/verify-recaptcha', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        token: recaptchaToken,
-        formData: {
-          customer_name: form.name.trim(),
-          phone: form.phone.trim(),
-          email: form.email.trim(),
-          address: form.region.trim() + ', ' + form.village.trim(),
-          service_type: form.services.join(', '),
-          description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}`,
-          whatsapp_confirmed: form.whatsappOptIn === true,
-        },
-      }),
-    });
-    const verifyData = await verifyRes.json();
-    if (!verifyRes.ok || !verifyData.success) {
-      setSubmitting(false);
-      const err = { ...errors, recaptcha: 'reCAPTCHA verification failed. Please try again.' };
-      setErrors(err); scrollToFirstError(err); return;
-    }
-    if (isDisposableEmail(form.email.trim())) {
-      setSubmitting(false);
-      const err = { ...errors, email: 'Disposable email not allowed.' };
-      setErrors(err); scrollToFirstError(err); return;
-    }
-
-    // The server-side /api/verify-recaptcha handles insertion into
-    // pending_service_requests with a server-generated verification token.
-    // The token's SHA-256 hash (verification_token_hash) is stored; the
-    // raw token is never returned to the browser. A separate reCAPTCHA token
-    // is verified server-side and discarded.
-    if (verifyData.pendingId) {
-      setRefNumber(verifyData.customerRef || 'JRS-?');
-      setSubmitted(true);
-      setErrorState('');
-      try { localStorage.removeItem('jrs-request-form'); } catch { /* ignore */ }
-      if (viaWhatsApp) {
-        const msg = `Service Request (${verifyData.customerRef || refNumber})%0AName: ${encodeURIComponent(sanitize(form.name.trim()))}`;
-        window.open(`https://wa.me/5926992175?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
+      let response: Response;
+      let data: any;
+      try {
+        sent = true;
+        response = await fetch('/api/verify-recaptcha', {
+          method: 'POST', signal: controller.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, formData: {
+            customer_name: form.name.trim(), phone: form.phone.trim(), email: form.email.trim(),
+            address: form.region.trim() + ', ' + form.village.trim(), service_type: form.services.join(', '),
+            description: `Property: ${form.propertyDescription.trim()}\nSpecial Requirements: ${form.specialRequirements.trim()}\nPreferred Date: ${form.preferredDate}`,
+            preferred_date: form.preferredDate, consent: form.consent,
+            whatsapp_confirmed: form.whatsappOptIn === true,
+            honeypot: document.querySelector<HTMLInputElement>('[name="honeypot"]')?.value || '',
+          } }),
+        });
+        data = await response.json();
+      } finally { clearTimeout(timeout); }
+      if (!response.ok || !data.success) {
+        const messages: Record<string, string> = {
+          CAPTCHA_INVALID: 'reCAPTCHA verification failed. Please try again.',
+          CAPTCHA_UNAVAILABLE: 'Verification is temporarily unavailable. Please try later.',
+          VALIDATION_FAILED: 'Please check your contact details, services, date and consent.',
+          RATE_LIMITED: 'Too many requests. Please try again later.',
+          CONFIGURATION_ERROR: 'Requests are temporarily unavailable. Please contact us on WhatsApp.',
+          RATE_LIMIT_UNAVAILABLE: 'Requests are temporarily unavailable. Please try later.',
+          REQUEST_SAVE_FAILED: 'We could not save your request. Please contact us on WhatsApp.',
+          REFERENCE_CONFLICT: 'Unable to generate a reference. Please try again.',
+        };
+        if (!messages[data.code]) throw new Error('UNCONFIRMED');
+        setErrorState(messages[data.code]);
+        return;
       }
+      if (typeof data.pendingId !== 'string' || !/^JRS-[A-Z0-9]{10}$/.test(data.customerRef)) throw new Error('UNCONFIRMED');
+      setRefNumber(data.customerRef);
+      setSubmitted(true);
+      try { localStorage.removeItem('jrs-request-form'); } catch { /* optional storage */ }
+      if (viaWhatsApp) {
+        const message = `Service Request (${data.customerRef})\nName: ${form.name.trim()}`;
+        window.open(`https://wa.me/5926992175?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+      }
+    } catch {
+      if (sent) {
+        setUncertain(true);
+        setErrorState('We could not confirm whether your request was saved. Please contact us on WhatsApp before submitting again to avoid a duplicate.');
+      } else {
+        setErrorState('reCAPTCHA could not complete. Please try later or contact us on WhatsApp.');
+      }
+    } finally {
+      inFlight.current = false;
       setSubmitting(false);
-      return;
     }
-
-    // If no pendingId returned (should not happen if success==true), fall back.
-    setSubmitting(false);
-    const err = { ...errors, recaptcha: 'Failed to create request record.' };
-    setErrors(err); scrollToFirstError(err);
   };
 
   const toggleService = (s: string) => {
@@ -219,19 +185,21 @@ export default function RequestPage() {
       <Script
         src={`https://www.google.com/recaptcha/api.js?render=${process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY}`}
         strategy="afterInteractive"
-        onLoad={() => setRecaptchaReady(true)}
+        onReady={() => setRecaptchaReady(true)}
+        onError={() => setErrorState('reCAPTCHA could not load. Please contact us on WhatsApp.')}
       />
       <Header />
       <main className="max-w-3xl mx-auto px-6 py-16">
         <h1 className="font-serif text-4xl text-forest mb-3">Service Request</h1>
         <p className="text-gray-600 mb-10">All fields required unless noted. Data is stored securely; we respond within 1 business day.</p>
 
+        {errorState && <div role="alert" className="mb-6 rounded-lg bg-red-50 p-4 text-red-800">{errorState} <a className="underline" href="https://wa.me/5926992175" target="_blank" rel="noopener noreferrer">Contact us on WhatsApp</a></div>}
         {submitted ? (
           <div className="bg-green-50 border border-green-200 rounded-2xl p-8 text-center shadow-sm">
             <h2 className="font-serif text-2xl text-forest mb-2">Request Submitted</h2>
             <p className="text-gray-700 mb-1">Reference number: <strong className="text-forest">{refNumber}</strong></p>
             <p className="text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">Please save this reference number. You may need it later to identify or follow up on your request.</p>
-            <p className="text-sm text-gray-500 mb-6">Saved to local storage. You can reference this number when messaging us on WhatsApp.</p>
+            <p className="text-sm text-gray-500 mb-6">Please save this number. You can reference it when messaging us on WhatsApp.</p>
             <a href={`https://wa.me/5926992175?text=Following%20up%20on%20request%20${refNumber}`} target="_blank" rel="noopener noreferrer" className="inline-block bg-forest text-white px-6 py-3 rounded-full font-medium hover:bg-green-900 transition">Continue on WhatsApp</a>
           </div>
         ) : (
@@ -317,8 +285,8 @@ export default function RequestPage() {
               <a href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer" className="underline hover:text-forest">Terms of Service</a> apply.</p>
 
             <div className="flex flex-wrap gap-4 pt-2">
-              <button type="submit" disabled={submitting} className={`bg-forest text-white px-8 py-3 rounded-full font-medium shadow-lg transition ${submitting ? 'opacity-60 cursor-not-allowed' : 'hover:bg-green-900'}`}>{submitting ? 'Submitting...' : submitted ? 'Submitted ✓' : 'Submit Request'}</button>
-              <button type="button" disabled={submitting} onClick={(e) => handleSubmit(e as any, true)} className={`bg-gold text-forest px-8 py-3 rounded-full font-medium shadow-lg transition ${submitting ? 'opacity-60 cursor-not-allowed' : 'hover:bg-yellow-300'}`}>{submitting ? 'Submitting...' : submitted ? 'Submitted ✓' : 'Submit & Continue on WhatsApp'}</button>
+              <button type="submit" disabled={submitting || uncertain} className={`bg-forest text-white px-8 py-3 rounded-full font-medium shadow-lg transition ${(submitting || uncertain) ? 'opacity-60 cursor-not-allowed' : 'hover:bg-green-900'}`}>{submitting ? 'Submitting...' : submitted ? 'Submitted ✓' : 'Submit Request'}</button>
+              <button type="button" disabled={submitting || uncertain} onClick={(e) => handleSubmit(e as any, true)} className={`bg-gold text-forest px-8 py-3 rounded-full font-medium shadow-lg transition ${(submitting || uncertain) ? 'opacity-60 cursor-not-allowed' : 'hover:bg-yellow-300'}`}>{submitting ? 'Submitting...' : submitted ? 'Submitted ✓' : 'Submit & Continue on WhatsApp'}</button>
             </div>
           </form>
         )}

@@ -28,6 +28,8 @@ export default function AdminPage() {
   const [promotionError, setPromotionError] = useState<string | null>(null);
   const [promotionSuccess, setPromotionSuccess] = useState<string | null>(null);
   const [businessEmail, setBusinessEmail] = useState('admin@johnsonriseshine.gy');
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError, setDataError] = useState('');
   const [filter, setFilter] = useState('all');
 
   // Scroll important errors into view smoothly
@@ -64,14 +66,17 @@ export default function AdminPage() {
   // Load data when authenticated
   const loadData = useCallback(async () => {
     if (!auth) return;
-
+    setDataLoading(true);
+    setDataError('');
+    try {
     // Load confirmed service requests
     const { data: srData, error: srErr } = await supabase
       .from('service_requests')
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (!srErr && srData) {
+    if (srErr) throw new Error('LOAD_FAILED');
+    if (srData) {
       setRequests(srData.map((r: any) => ({
         id: r.id,
         ref: r.customer_ref || 'JRS-?',
@@ -88,7 +93,8 @@ export default function AdminPage() {
       .select('id, customer_ref, customer_name, phone, email, address, service_type, description, whatsapp_confirmed, created_at')
       .order('created_at', { ascending: false });
 
-    if (!prErr && prData) {
+    if (prErr) throw new Error('LOAD_FAILED');
+    if (prData) {
       setPendingRequests(prData.map((r: any) => ({
         id: r.id,
         ref: r.customer_ref ? ('PENDING-' + r.customer_ref) : ('PENDING-' + (r.id ? String(r.id).slice(0, 6).toUpperCase() : '')),
@@ -103,6 +109,9 @@ export default function AdminPage() {
         description: r.description || '',
       })));
     }
+    } catch {
+      setDataError('Could not refresh requests. Any displayed data may be out of date. Please retry.');
+    } finally { setDataLoading(false); }
   }, [auth]);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -349,6 +358,10 @@ export default function AdminPage() {
             {promotionSuccess && (
               <div className="bg-green-100 border border-green-300 text-green-800 text-sm px-4 py-2 rounded-lg mb-4">{promotionSuccess}</div>
             )}
+            <div id="admin-error-area" aria-live="polite">
+              {dataLoading && <p>Loading requests…</p>}
+              {dataError && <div role="alert" className="mb-4 text-red-700">{dataError} <button type="button" disabled={dataLoading} onClick={() => loadData()} className="underline">Retry</button></div>}
+            </div>
             {promotionError && (
               <div className="bg-red-100 border border-red-300 text-red-800 text-sm px-4 py-2 rounded-lg mb-4">{promotionError}
                 <button onClick={() => setPromotionError(null)} className="ml-2 text-xs underline">Dismiss</button>
@@ -357,7 +370,7 @@ export default function AdminPage() {
 
             <h2 className="text-xl font-medium text-forest mb-2">Pending Requests</h2>
             {pendingRequests.length === 0 ? (
-              <p className="text-sm text-gray-500 mb-6">No pending requests.</p>
+              <p className="text-sm text-gray-500 mb-6">{dataLoading ? 'Loading pending requests…' : dataError ? 'Pending requests could not be verified.' : 'No pending requests.'}</p>
             ) : (
               <table className="w-full bg-white rounded-2xl shadow border border-green-100 text-sm mb-6">
                 <thead className="bg-green-50"><tr><th className="text-left px-4 py-3">Ref</th><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Phone</th><th className="text-left px-4 py-3">Email</th><th className="text-left px-4 py-3">Service</th><th className="text-left px-4 py-3">Description</th><th className="text-left px-4 py-3">WhatsApp Opt-in</th><th className="text-left px-4 py-3">Requested</th><th className="text-left px-4 py-3">Action</th></tr></thead>

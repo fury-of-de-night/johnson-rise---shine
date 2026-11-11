@@ -3,14 +3,10 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID, createHash } from 'crypto';
 import { isDisposableEmail } from '@/lib/disposable-blocklist';
 import { generateSecureCustomerRef } from '@/lib/security';
+import { requestSchema } from '@/lib/request-validation';
+import { consumeRequestLimit } from '@/lib/rate-limit';
 
-// Server-side: use service role key for trusted INSERT into pending_service_requests.
-// The anon role has no table INSERT privilege, so the publishable key cannot insert.
-// This key is never exposed to the browser — it exists only in server env vars.
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-);
+export const config = { api: { bodyParser: { sizeLimit: '32kb' } } };
 
 export default async function handler(
   req: NextApiRequest,
@@ -20,38 +16,23 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { token, formData } = req.body;
-  if (!token) {
-    return res.status(400).json({ error: 'Token missing' });
+  const fail = (status: number, code: string, error: string) => res.status(status).json({ code, error });
+  const { token, formData: rawForm } = req.body || {};
+  if (typeof token !== 'string' || !token || token.length > 8192) {
+    return fail(400, 'CAPTCHA_INVALID', 'Please complete reCAPTCHA verification.');
   }
-  if (!formData || typeof formData !== 'object') {
-    return res.status(400).json({ error: 'Form data missing' });
-  }
+  const parsed = requestSchema.safeParse(rawForm);
+  if (!parsed.success) return fail(400, 'VALIDATION_FAILED', 'Please check your contact details, services, date and consent.');
+  const formData = parsed.data;
+  if (isDisposableEmail(formData.email)) return fail(400, 'VALIDATION_FAILED', 'Disposable email not allowed.');
 
-  const xForwarded = req.headers['x-forwarded-for'];
-  const ip = (typeof xForwarded === 'string' ? xForwarded.split(',')[0] : req.socket?.remoteAddress) || 'unknown';
-
-  try {
-    const now = new Date();
-    const { data: rows } = await supabaseAdmin.from('rate_limits').select('*').eq('ip', ip.trim()).gte('reset_at', now.toISOString()).limit(1);
-    if (rows && rows.length > 0) {
-      const row = rows[0];
-      if (row.count >= 5) {
-        return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
-      }
-      await supabaseAdmin.from('rate_limits').update({ count: row.count + 1 }).eq('id', row.id);
-    } else {
-      await supabaseAdmin.from('rate_limits').insert({ ip: ip.trim(), count: 1, reset_at: new Date(Date.now() + 3600000).toISOString() });
-    }
-  } catch (e) {
-    console.error('Rate limit DB error:', e);
-  }
-
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const secret = process.env.RECAPTCHA_SECRET_KEY;
-  if (!secret) {
-    console.error('RECAPTCHA_SECRET_KEY not set');
-    return res.status(500).json({ error: 'Server configuration error' });
-  }
+  if (!url || !key || !secret) return fail(503, 'CONFIGURATION_ERROR', 'Requests are temporarily unavailable. Please contact us on WhatsApp.');
+  let supabaseAdmin;
+  try { supabaseAdmin = createClient(url, key); }
+  catch { return fail(503, 'CONFIGURATION_ERROR', 'Requests are temporarily unavailable. Please contact us on WhatsApp.'); }
 
   const verifyUrl = `https://www.google.com/recaptcha/api/siteverify`;
   const params = new URLSearchParams({
@@ -63,29 +44,34 @@ export default async function handler(
     const response = await fetch(verifyUrl, {
       method: 'POST',
       body: params,
+      signal: AbortSignal.timeout(10000),
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
     });
 
+    if (!response.ok) return fail(503, 'CAPTCHA_UNAVAILABLE', 'Verification is temporarily unavailable. Please try later.');
     const data = await response.json();
 
     if (!data.success) {
-      console.warn('reCAPTCHA verification failed', data);
-      return res.status(400).json({ error: 'reCAPTCHA verification failed' });
+      return fail(400, 'CAPTCHA_INVALID', 'reCAPTCHA verification failed. Please try again.');
     }
 
     // v3 returns 0.0-1.0 score; reject null/absent/missing/non-number scores explicitly.
-    if (data.score == null || typeof data.score !== 'number' || data.score < 0.5) {
-      console.warn('reCAPTCHA score below threshold', data.score);
-      return res.status(400).json({ error: 'reCAPTCHA verification failed' });
+    if (data.action !== 'submit' || typeof data.score !== 'number' || !Number.isFinite(data.score) || data.score < 0.5) {
+      return fail(400, 'CAPTCHA_INVALID', 'reCAPTCHA verification failed. Please try again.');
     }
 
-    // Authoritative server-side disposable email check (before any DB insert)
-    const emailRaw = String(formData.email || '').trim();
-    if (isDisposableEmail(emailRaw)) {
-      console.warn('Disposable email blocked server-side:', emailRaw);
-      return res.status(400).json({ error: 'Disposable email not allowed.' });
+    // Vercel overwrites x-vercel-forwarded-for. Never trust arbitrary forwarded headers.
+    const ip = process.env.VERCEL === '1'
+      ? req.headers['x-vercel-forwarded-for']
+      : req.socket?.remoteAddress;
+    if (typeof ip !== 'string' || !ip.trim()) return fail(503, 'RATE_LIMIT_UNAVAILABLE', 'Requests are temporarily unavailable.');
+    try {
+      if (!await consumeRequestLimit(supabaseAdmin, ip.trim())) return fail(429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
+    } catch {
+      console.error('Request limiter unavailable');
+      return fail(503, 'RATE_LIMIT_UNAVAILABLE', 'Requests are temporarily unavailable. Please try later.');
     }
 
     // Generate customer reference and perform atomic registry + pending insert
@@ -125,21 +111,21 @@ export default async function handler(
       // Only treat registry-PK collision as retryable; other DB errors fail immediately.
       if (rpcError && rpcError.message.includes('Customer reference collision')) {
         if (attempt < MAX_ATTEMPTS) continue;
-        return res.status(409).json({ error: 'Unable to generate a unique reference. Please try again.' });
+        return fail(409, 'REFERENCE_CONFLICT', 'Unable to generate a reference. Please try again.');
       }
 
-      console.error('Atomic pending creation RPC failed (non-collision):', rpcError);
-      return res.status(500).json({ error: 'Failed to create request.' });
+      console.error('Pending creation failed', { code: rpcError?.code });
+      return fail(500, 'REQUEST_SAVE_FAILED', 'We could not save your request. Please contact us on WhatsApp.');
     }
 
     if (!pendingId || !customerRef) {
-      return res.status(500).json({ error: 'Failed to create request.' });
+      return fail(500, 'REQUEST_SAVE_FAILED', 'We could not save your request. Please contact us on WhatsApp.');
     }
 
     // The registry is created automatically by the RPC (atomic). Return the reference to the customer.
     return res.status(200).json({ success: true, score: data.score, pendingId, customerRef });
   } catch (error) {
-    console.error('Error verifying reCAPTCHA:', error);
-    return res.status(500).json({ error: 'Failed to verify reCAPTCHA' });
+    console.error('Request processing failed');
+    return fail(503, 'REQUEST_UNAVAILABLE', 'We could not confirm your request. Please contact us before submitting again.');
   }
 }
