@@ -109,9 +109,16 @@ export default function RequestPage() {
           clearTimeout(timeout); reject(new Error('CAPTCHA_UNAVAILABLE')); return;
         }
         window.grecaptcha.ready(() => {
-          window.grecaptcha.execute(process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!, { action: 'submit' })
-            .then(resolve, reject).finally(() => clearTimeout(timeout));
-        });
+    Promise.resolve()
+      .then(() =>
+        window.grecaptcha.execute(
+          process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!,
+          { action: 'submit' }
+        )
+      )
+      .then(resolve, reject)
+      .finally(() => clearTimeout(timeout));
+  });
       });
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 20000);
