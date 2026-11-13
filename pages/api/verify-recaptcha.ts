@@ -4,7 +4,7 @@ import { randomUUID, createHash } from 'crypto';
 import { isDisposableEmail } from '@/lib/disposable-blocklist';
 import { generateSecureCustomerRef } from '@/lib/security';
 import { requestSchema } from '@/lib/request-validation';
-import { consumeRequestLimit } from '@/lib/rate-limit';
+import { consumeRequestLimit, rateLimitDiagnostic } from '@/lib/rate-limit';
 
 export const config = { api: { bodyParser: { sizeLimit: '32kb' } } };
 
@@ -66,12 +66,17 @@ export default async function handler(
     const ip = process.env.VERCEL === '1'
       ? req.headers['x-vercel-forwarded-for']
       : req.socket?.remoteAddress;
-    if (typeof ip !== 'string' || !ip.trim()) return fail(503, 'RATE_LIMIT_UNAVAILABLE', 'Requests are temporarily unavailable.');
+    if (typeof ip !== 'string' || !ip.trim()) {
+      const diagnosticId = randomUUID();
+      console.error('Request limiter unavailable', { diagnosticId, reason: 'CLIENT_IP_UNAVAILABLE' });
+      return res.status(503).json({ code: 'RATE_LIMIT_UNAVAILABLE', error: 'Requests are temporarily unavailable. Please try later.', diagnosticId });
+    }
     try {
       if (!await consumeRequestLimit(supabaseAdmin, ip.trim())) return fail(429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
-    } catch {
-      console.error('Request limiter unavailable');
-      return fail(503, 'RATE_LIMIT_UNAVAILABLE', 'Requests are temporarily unavailable. Please try later.');
+    } catch (error) {
+      const diagnosticId = randomUUID();
+      console.error('Request limiter unavailable', { diagnosticId, ...rateLimitDiagnostic(error) });
+      return res.status(503).json({ code: 'RATE_LIMIT_UNAVAILABLE', error: 'Requests are temporarily unavailable. Please try later.', diagnosticId });
     }
 
     // Generate customer reference and perform atomic registry + pending insert

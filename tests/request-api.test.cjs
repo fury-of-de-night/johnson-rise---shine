@@ -21,7 +21,7 @@ async function invoke({ form = valid(), captcha = { success: true, score: .9, ac
   let limits = 0, writes = 0;
   const { default: handler } = load('pages/api/verify-recaptcha.ts', {
     '@supabase/supabase-js': { createClient: () => ({ rpc: async () => { writes++; if (rpcThrow) throw Error('fixture'); return { data: rpcError ? null : 'pending-fixture', error: rpcError }; } }) },
-    '@/lib/rate-limit': { consumeRequestLimit: async () => { limits++; if (limit instanceof Error) throw limit; return limit; } },
+    '@/lib/rate-limit': { rateLimitDiagnostic: () => ({ reason: 'UNEXPECTED_FAILURE' }), consumeRequestLimit: async () => { limits++; if (limit instanceof Error) throw limit; return limit; } },
   }, { fetch: async () => ({ ok: true, json: async () => captcha }) });
   let status, body;
   const res = { status(value) { status = value; return this; }, json(value) { body = value; return this; } };
@@ -54,4 +54,28 @@ test('conditional limiter retries a concurrent increment and fails closed on err
   const {consumeRequestLimit}=load('src/lib/rate-limit.ts');assert.equal(await consumeRequestLimit(client,'127.0.0.1'),true);assert.equal(updates,2);
   const broken={from:()=>({select(){return this},eq(){return this},gte:async()=>({error:{message:'denied'}})})};
   await assert.rejects(consumeRequestLimit(broken,'127.0.0.1'),/RATE_LIMIT_UNAVAILABLE/);
+});
+
+test('rate-limit diagnostics distinguish database operations without leaking values', async () => {
+  const {consumeRequestLimit, rateLimitDiagnostic, RateLimitError} = load('src/lib/rate-limit.ts');
+  for (const stage of ['READ_FAILED', 'INSERT_FAILED', 'UPDATE_FAILED', 'DUPLICATE_ACTIVE_ROWS', 'UPDATE_CONFLICT', 'INVALID_COUNTER']) {
+    const client = { from() {
+      let updating = false;
+      const q = {
+        select(){return q}, eq(){return q},
+        gte: async () => stage === 'READ_FAILED' ? {error:{code:'42501',message:'private IP and key'}} : {data: stage === 'INSERT_FAILED' ? [] : stage === 'DUPLICATE_ACTIVE_ROWS' ? [{id:'a',count:1},{id:'b',count:1}] : [{id:'a',count:stage==='INVALID_COUNTER'?null:1}]},
+        insert: async () => ({error:{code:'42501',details:'private'}}),
+        update(){updating=true;return q},
+        then(resolve){return Promise.resolve(stage==='UPDATE_FAILED'?{error:{code:'42501',message:'private'}}:{data:[]}).then(resolve)},
+      }; return q;
+    }};
+    await assert.rejects(consumeRequestLimit(client,'private-ip'),error => {
+      const diagnostic=rateLimitDiagnostic(error);
+      assert.equal(diagnostic.reason,stage);
+      assert.ok(!JSON.stringify(diagnostic).includes('private'));
+      return true;
+    });
+  }
+  assert.equal(rateLimitDiagnostic(new RateLimitError('READ_FAILED','secret-value')).databaseCode,undefined);
+  assert.equal(rateLimitDiagnostic(new Error('private')).reason,'UNEXPECTED_FAILURE');
 });

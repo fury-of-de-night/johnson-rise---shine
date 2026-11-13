@@ -33,6 +33,7 @@ export default function RequestPage() {
     consent: false,
   });
   const inFlight = useRef(false);
+  const errorBanner = useRef<HTMLDivElement>(null);
   const [uncertain, setUncertain] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -40,6 +41,12 @@ export default function RequestPage() {
   const [refNumber, setRefNumber] = useState('');
   const [errorState, setErrorState] = useState('');
   const [recaptchaReady, setRecaptchaReady] = useState(false);
+
+  useEffect(() => {
+    if (!errorState) return;
+    errorBanner.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    errorBanner.current?.focus({ preventScroll: true });
+  }, [errorState]);
 
   useEffect(() => {
     try {
@@ -152,7 +159,7 @@ export default function RequestPage() {
           REFERENCE_CONFLICT: 'Unable to generate a reference. Please try again.',
         };
         if (!messages[data.code]) throw new Error('UNCONFIRMED');
-        setErrorState(messages[data.code]);
+        setErrorState(messages[data.code] + (typeof data.diagnosticId === 'string' && /^[0-9a-f-]{36}$/i.test(data.diagnosticId) ? ` Support reference: ${data.diagnosticId}` : ''));
         return;
       }
       if (typeof data.pendingId !== 'string' || !/^JRS-[A-Z0-9]{10}$/.test(data.customerRef)) throw new Error('UNCONFIRMED');
@@ -200,7 +207,7 @@ export default function RequestPage() {
         <h1 className="font-serif text-4xl text-forest mb-3">Service Request</h1>
         <p className="text-gray-600 mb-10">All fields required unless noted. Data is stored securely; we respond within 1 business day.</p>
 
-        {errorState && <div role="alert" className="mb-6 rounded-lg bg-red-50 p-4 text-red-800">{errorState} <a className="underline" href="https://wa.me/5926992175" target="_blank" rel="noopener noreferrer">Contact us on WhatsApp</a></div>}
+        {errorState && <div ref={errorBanner} tabIndex={-1} role="alert" className="mb-6 rounded-lg bg-red-50 p-4 text-red-800">{errorState} <a className="underline" href="https://wa.me/5926992175" target="_blank" rel="noopener noreferrer">Contact us on WhatsApp</a></div>}
         {submitted ? (
           <div className="bg-green-50 border border-green-200 rounded-2xl p-8 text-center shadow-sm">
             <h2 className="font-serif text-2xl text-forest mb-2">Request Submitted</h2>
